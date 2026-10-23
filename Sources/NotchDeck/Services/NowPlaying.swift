@@ -53,7 +53,8 @@ final class NowPlaying: ObservableObject {
     private var lastPlayer: MediaPlayer?
     private var observers: [NSObjectProtocol] = []
 
-    init() {
+    init(live: Bool = true) {
+        guard live else { return }
         let center = DistributedNotificationCenter.default()
         for name in ["com.spotify.client.PlaybackStateChanged", "com.apple.Music.playerInfo"] {
             observers.append(center.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
@@ -62,6 +63,13 @@ final class NowPlaying: ObservableObject {
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in self?.refresh() }
         refresh()
+    }
+
+    /// Fixed sample data for `--render-previews`.
+    func showPreview(_ track: Track, artwork: NSImage, accent: Color) {
+        self.track = track
+        self.artwork = artwork
+        self.accent = accent
     }
 
     var installedPlayers: [MediaPlayer] { MediaPlayer.allCases.filter { $0.appURL != nil } }

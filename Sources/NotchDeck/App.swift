@@ -6,6 +6,11 @@ enum Main {
     static let delegate = AppDelegate()
 
     static func main() {
+        if let i = CommandLine.arguments.firstIndex(of: "--render-previews") {
+            let dir = CommandLine.arguments.count > i + 1 ? CommandLine.arguments[i + 1] : "previews"
+            Previews.render(to: URL(fileURLWithPath: dir))
+            return
+        }
         let app = NSApplication.shared
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
@@ -19,6 +24,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         controller = NotchController()
+
+        // `--open <tab>` opens the notch on launch (handy for screenshots and for testing).
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--open"), args.count > i + 1, let tab = NotchTab(rawValue: args[i + 1]) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.controller?.expand(tab: tab, sticky: true)
+            }
+        }
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "laptopcomputer", accessibilityDescription: "NotchDeck")

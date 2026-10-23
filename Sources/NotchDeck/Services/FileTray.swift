@@ -6,8 +6,11 @@ final class FileTray: ObservableObject {
     @Published private(set) var items: [URL] = []
 
     private let defaultsKey = "tray.paths"
+    private let persists: Bool
 
-    init() {
+    init(persists: Bool = true) {
+        self.persists = persists
+        guard persists else { return }
         let paths = UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
         items = paths.map { URL(fileURLWithPath: $0) }
             .filter { FileManager.default.fileExists(atPath: $0.path) }
@@ -55,6 +58,7 @@ final class FileTray: ObservableObject {
     }
 
     private func save() {
+        guard persists else { return }
         UserDefaults.standard.set(items.map(\.path), forKey: defaultsKey)
     }
 }

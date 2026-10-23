@@ -22,6 +22,16 @@ Needs macOS 14+ and the Swift toolchain (the Command Line Tools are enough; Xcod
 ./scripts/build-app.sh --install  # also copies it to /Applications and launches it
 ```
 
+Two flags help when working on it:
+
+```bash
+build/NotchDeck.app/Contents/MacOS/NotchDeck --render-previews previews   # every state to PNG, no window
+open build/NotchDeck.app --args --open tray                               # open a tab on launch
+```
+
+(`--render-previews` uses SwiftUI's `ImageRenderer`, which draws the drop target as a yellow
+placeholder and skips the tray's scroll view; the real panel has neither problem.)
+
 The menu bar icon (a laptop) opens any tab, toggles Launch at Login (works once the app is in
 /Applications), and quits.
 
