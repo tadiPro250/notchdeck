@@ -45,7 +45,8 @@ struct Track: Equatable {
 final class NowPlaying: ObservableObject {
     @Published private(set) var track: Track?
     @Published private(set) var artwork: NSImage?
-    @Published private(set) var accent: Color = .white
+    /// The album art's colour, lifted to read on black. Nil until artwork loads.
+    @Published private(set) var artworkAccent: Color?
 
     private let queue = DispatchQueue(label: "notchdeck.nowplaying")
     private var timer: Timer?
@@ -69,7 +70,7 @@ final class NowPlaying: ObservableObject {
     func showPreview(_ track: Track, artwork: NSImage, accent: Color) {
         self.track = track
         self.artwork = artwork
-        self.accent = accent
+        self.artworkAccent = accent
     }
 
     var installedPlayers: [MediaPlayer] { MediaPlayer.allCases.filter { $0.appURL != nil } }
@@ -92,6 +93,7 @@ final class NowPlaying: ObservableObject {
         guard let chosen else {
             artworkKey = nil
             artwork = nil
+            artworkAccent = nil
             return
         }
         if chosen.identity != artworkKey {
@@ -171,7 +173,7 @@ final class NowPlaying: ObservableObject {
             DispatchQueue.main.async {
                 guard let self, self.artworkKey == key else { return }
                 self.artwork = image
-                self.accent = image.flatMap(Self.accentColor).map { Color(nsColor: $0) } ?? .white
+                self.artworkAccent = image.flatMap(Self.accentColor).map { Color(nsColor: $0) }
             }
         }
         switch track.player {
@@ -205,6 +207,8 @@ final class NowPlaying: ObservableObject {
                               blue: CGFloat(pixel[2]) / 255, alpha: 1)
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         average.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        // Near-grey artwork makes a muddy accent; let the theme's accent take over instead.
+        guard s > 0.18 else { return nil }
         return NSColor(deviceHue: h, saturation: min(s * 1.25, 0.9), brightness: max(b, 0.8), alpha: 1)
     }
 }

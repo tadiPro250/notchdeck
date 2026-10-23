@@ -15,27 +15,42 @@ final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+/// Everything the views read from, bundled so it can be handed down in one piece.
+struct NotchServices {
+    let settings: AppSettings
+    let player: NowPlaying
+    let tray: FileTray
+    let volume: VolumeControl
+    let brightness: BrightnessControl
+    let system: SystemStatus
+    let actions: QuickActions
+    let calendar: CalendarService
+    let weather: WeatherService
+    let clipboard: ClipboardHistory
+    let stats: SystemStats
+    let timer: FocusTimer
+    let camera: CameraMirror
+
+    static func live(settings: AppSettings) -> NotchServices {
+        NotchServices(settings: settings, player: NowPlaying(), tray: FileTray(), volume: VolumeControl(),
+                      brightness: BrightnessControl(), system: SystemStatus(), actions: QuickActions(),
+                      calendar: CalendarService(), weather: WeatherService(settings: settings),
+                      clipboard: ClipboardHistory(settings: settings), stats: SystemStats(),
+                      timer: FocusTimer(), camera: CameraMirror())
+    }
+}
+
 /// Owns the panel that sits over the notch, and decides when it opens and closes.
 final class NotchController {
-    static let windowSize = CGSize(width: 780, height: 270)
+    static let windowSize = CGSize(width: 800, height: 300)
 
+    let settings = AppSettings.shared
     let model: NotchModel
-    let player = NowPlaying()
-    let tray = FileTray()
-    let volume = VolumeControl()
-    let brightness = BrightnessControl()
-    let system = SystemStatus()
-    let actions = QuickActions()
+    let services: NotchServices
     let mediaKeys = MediaKeyInterceptor()
+    let bluetooth = BluetoothWatcher()
 
-    static let replaceHUDKey = "replaceSystemHUD"
-    var replacesSystemHUD: Bool {
-        get { UserDefaults.standard.object(forKey: Self.replaceHUDKey) as? Bool ?? true }
-        set {
-            UserDefaults.standard.set(newValue, forKey: Self.replaceHUDKey)
-            newValue ? mediaKeys.start(prompt: true) : mediaKeys.stop()
-        }
-    }
+    var onOpenSettings: (() -> Void)?
 
     private let panel: NotchPanel
     private var monitors: [Any] = []
@@ -48,9 +63,12 @@ final class NotchController {
     private var pressBeganInside = false
     private var stickyUntil = Date.distantPast
     private var expandedWatch: Timer?
+    private var swipeAccumulator: CGFloat = 0
+    private var swipeLocked = false
 
     init() {
-        model = NotchModel(geometry: .current())
+        model = NotchModel(geometry: .current(), settings: settings)
+        services = .live(settings: settings)
         panel = NotchPanel(contentRect: .zero,
                            styleMask: [.borderless, .nonactivatingPanel],
                            backing: .buffered, defer: false)
@@ -64,51 +82,116 @@ final class NotchController {
         panel.acceptsMouseMovedEvents = true
         panel.ignoresMouseEvents = true
 
-        let root = NotchRootView(model: model, player: player, tray: tray, volume: volume,
-                                 brightness: brightness, system: system, actions: actions)
-        let hosting = FirstMouseHostingView(rootView: root)
+        let hosting = FirstMouseHostingView(rootView: NotchRootView(model: model, services: services,
+                                                                    settings: settings, player: services.player))
         hosting.sizingOptions = []
         panel.contentView = hosting
         place()
         panel.orderFrontRegardless()
 
         model.onRequestCollapse = { [weak self] in self?.collapse() }
-
-        player.$track
-            .map { $0?.isPlaying ?? false }
-            .removeDuplicates()
-            .sink { [weak self] playing in self?.model.isPlaying = playing }
-            .store(in: &bag)
-
-        volume.onExternalChange = { [weak self] level, muted in
-            self?.model.flashHUD(HUDState(kind: .volume(muted: muted), level: muted ? 0 : level))
+        model.onOpenSettings = { [weak self] in
+            self?.collapse()
+            self?.onOpenSettings?()
         }
-        brightness.onExternalChange = { [weak self] level in
-            self?.model.flashHUD(HUDState(kind: .brightness, level: level))
-        }
+
+        wireServices()
+        installMonitors()
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             self.model.geometry = .current()
-            self.brightness.refreshDisplay()
+            self.services.brightness.refreshDisplay()
             self.place()
         }
+    }
 
-        installMonitors()
+    private func wireServices() {
+        let s = services
+
+        s.player.$track
+            .map { $0?.isPlaying ?? false }
+            .removeDuplicates()
+            .sink { [weak self] playing in self?.model.isPlaying = playing }
+            .store(in: &bag)
+
+        s.timer.$endDate.combineLatest(s.timer.$pausedRemaining)
+            .map { $0 != nil || $1 != nil }
+            .removeDuplicates()
+            .sink { [weak self] active in self?.model.timerActive = active }
+            .store(in: &bag)
+
+        // The model's shape depends on settings (HUD style, corner radius…): redraw when they move.
+        settings.objectWillChange
+            .sink { [weak self] in self?.model.objectWillChange.send() }
+            .store(in: &bag)
+
+        s.volume.onExternalChange = { [weak self] level, muted in
+            self?.model.flashHUD(HUDState(kind: .volume(muted: muted), level: muted ? 0 : level))
+        }
+        s.brightness.onExternalChange = { [weak self] level in
+            self?.model.flashHUD(HUDState(kind: .brightness, level: level))
+        }
+
+        s.system.onPowerEvent = { [weak self] pluggedIn, level in
+            guard let self, self.settings.chargingActivity else { return }
+            self.model.showActivity(ActivityState(
+                symbol: pluggedIn ? "bolt.fill" : "battery.100",
+                title: pluggedIn ? "Charging" : "On Battery",
+                detail: "\(level)%",
+                tint: pluggedIn ? .green : .white,
+                progress: Double(level) / 100))
+        }
+        s.system.onLowBattery = { [weak self] level in
+            guard let self, self.settings.chargingActivity else { return }
+            self.model.showActivity(ActivityState(symbol: "battery.25", title: "Low Battery",
+                                                  detail: "\(level)% remaining", tint: .red,
+                                                  progress: Double(level) / 100), for: 4)
+        }
+
+        bluetooth.onChange = { [weak self] name, symbol, connected in
+            guard let self, self.settings.bluetoothActivity else { return }
+            self.model.showActivity(ActivityState(symbol: symbol, title: name,
+                                                  detail: connected ? "Connected" : "Disconnected",
+                                                  tint: connected ? .blue : .gray, progress: nil))
+        }
+        settings.$bluetoothActivity
+            .removeDuplicates()
+            .sink { [weak self] on in on ? self?.bluetooth.start() : self?.bluetooth.stop() }
+            .store(in: &bag)
+
+        s.calendar.onUpcoming = { [weak self] event in
+            guard let self, self.settings.calendarActivity else { return }
+            let minutes = max(Int((event.start.timeIntervalSinceNow / 60).rounded()), 1)
+            self.model.showActivity(ActivityState(symbol: "calendar", title: event.title,
+                                                  detail: "Starts in \(minutes) min", tint: event.color,
+                                                  progress: nil), for: 6)
+        }
+
+        s.timer.onFinish = { [weak self] in
+            self?.model.showActivity(ActivityState(symbol: "timer", title: "Timer done",
+                                                   detail: "Time for a break", tint: .orange, progress: nil), for: 5)
+        }
 
         mediaKeys.handler = { [weak self] key, fine in self?.handleMediaKey(key, fineStep: fine) ?? false }
-        if replacesSystemHUD { mediaKeys.start(prompt: true) }
+        settings.$replaceSystemHUD
+            .removeDuplicates()
+            .sink { [weak self] on in on ? self?.mediaKeys.start(prompt: true) : self?.mediaKeys.stop() }
+            .store(in: &bag)
     }
 
     // MARK: Volume and brightness keys
 
     /// Does what the key would have done, then shows the notch HUD instead of the system one.
     private func handleMediaKey(_ key: MediaKeyInterceptor.Key, fineStep: Bool) -> Bool {
-        let step = fineStep ? 1.0 / 64 : 1.0 / 16
+        let steps = Double(settings.volumeSteps.rawValue) * (fineStep ? 4 : 1)
+        let step = 1 / steps
         func stepped(_ value: Double, by delta: Double) -> Double {
             min(max(((value / step).rounded() + delta) * step, 0), 1)
         }
+        let volume = services.volume
+        let brightness = services.brightness
         switch key {
         case .volumeUp, .volumeDown, .mute:
             guard volume.canSetVolume else { return false }
@@ -136,7 +219,7 @@ final class NotchController {
         CFPreferencesAppSynchronize(kCFPreferencesAnyApplication)
         let enabled = CFPreferencesCopyAppValue("com.apple.sound.beep.feedback" as CFString,
                                                 kCFPreferencesAnyApplication) as? Int ?? 0
-        guard enabled == 1, !volume.isMuted, let sound = feedbackSound else { return }
+        guard enabled == 1, !services.volume.isMuted, let sound = feedbackSound else { return }
         sound.stop()
         sound.play()
     }
@@ -147,10 +230,15 @@ final class NotchController {
         cancelPending()
         if let tab { model.tab = tab }
         if sticky { stickyUntil = Date().addingTimeInterval(4) }
+        let wasExpanded = model.isExpanded
         panel.ignoresMouseEvents = false
         model.setExpanded(true)
-        actions.refresh()
-        player.refresh()
+        services.actions.refresh()
+        services.player.refresh()
+        services.calendar.reload()
+        if !wasExpanded, settings.haptics {
+            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+        }
         log.info("expanded on \(self.model.tab.rawValue, privacy: .public)")
         // Belt and braces: if mouse events go missing, still fold away once the pointer has left.
         expandedWatch?.invalidate()
@@ -204,6 +292,34 @@ final class NotchController {
         }) {
             monitors.append(m)
         }
+        if let m = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { [weak self] event in
+            self?.handleSwipe(event) == true ? nil : event
+        }) {
+            monitors.append(m)
+        }
+    }
+
+    /// Two-finger horizontal swipe on the open panel moves between tabs.
+    private func handleSwipe(_ event: NSEvent) -> Bool {
+        guard model.isExpanded, settings.swipeBetweenTabs, event.hasPreciseScrollingDeltas else { return false }
+        // The tray and clipboard scroll sideways themselves.
+        if (model.tab == .tray && !services.tray.items.isEmpty) || (model.tab == .clipboard && !services.clipboard.items.isEmpty) {
+            return false
+        }
+        if event.phase == .began { swipeAccumulator = 0; swipeLocked = false }
+        guard abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) else { return false }
+        if !swipeLocked {
+            swipeAccumulator += event.scrollingDeltaX
+            if abs(swipeAccumulator) > 50 {
+                model.selectAdjacentTab(swipeAccumulator < 0 ? 1 : -1)
+                swipeLocked = true
+                if settings.haptics {
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                }
+            }
+        }
+        if event.phase == .ended || event.phase == .cancelled { swipeAccumulator = 0; swipeLocked = false }
+        return true
     }
 
     private func globalMouseDown() {
@@ -211,8 +327,12 @@ final class NotchController {
         externalDrag = false
         dragChangeCount = NSPasteboard(name: .drag).changeCount
         startDragPolling()
-        if model.isExpanded, !model.screenRect.insetBy(dx: -10, dy: -10).contains(NSEvent.mouseLocation) {
+        let point = NSEvent.mouseLocation
+        if model.isExpanded, !model.screenRect.insetBy(dx: -10, dy: -10).contains(point) {
             collapse()
+        } else if !model.isExpanded, settings.openTrigger == .click,
+                  model.screenRect.insetBy(dx: -4, dy: -4).contains(point) {
+            expand()
         }
     }
 
@@ -238,6 +358,10 @@ final class NotchController {
         dragPoll = timer
     }
 
+    private func hotZone() -> CGRect {
+        externalDrag ? model.screenRect.insetBy(dx: -60, dy: -40) : model.screenRect.insetBy(dx: -2, dy: -2)
+    }
+
     private func mouseMoved() {
         let point = NSEvent.mouseLocation
         if model.isExpanded {
@@ -248,29 +372,25 @@ final class NotchController {
             } else if Date() >= stickyUntil, collapseWork == nil {
                 scheduleCollapse()
             }
-        } else {
-            let hot = externalDrag
-                ? model.screenRect.insetBy(dx: -60, dy: -40)
-                : model.screenRect.insetBy(dx: -2, dy: -2)
-            if hot.contains(point) {
-                guard expandWork == nil else { return }
-                let forDrop = externalDrag
-                let work = DispatchWorkItem { [weak self] in
-                    guard let self else { return }
-                    self.expandWork = nil
-                    let stillHot = self.externalDrag
-                        ? self.model.screenRect.insetBy(dx: -60, dy: -40)
-                        : self.model.screenRect.insetBy(dx: -2, dy: -2)
-                    if stillHot.contains(NSEvent.mouseLocation) {
-                        self.expand(tab: forDrop ? .tray : nil)
-                    }
+            return
+        }
+        // In click mode only a drag opens the notch by itself.
+        guard settings.openTrigger == .hover || externalDrag else { return }
+        if hotZone().contains(point) {
+            guard expandWork == nil else { return }
+            let forDrop = externalDrag
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.expandWork = nil
+                if self.hotZone().contains(NSEvent.mouseLocation) {
+                    self.expand(tab: forDrop ? .tray : nil)
                 }
-                expandWork = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + (forDrop ? 0 : 0.12), execute: work)
-            } else {
-                expandWork?.cancel()
-                expandWork = nil
             }
+            expandWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + (forDrop ? 0 : settings.hoverDelay), execute: work)
+        } else {
+            expandWork?.cancel()
+            expandWork = nil
         }
     }
 

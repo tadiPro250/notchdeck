@@ -2,12 +2,8 @@ import SwiftUI
 
 struct ExpandedView: View {
     @ObservedObject var model: NotchModel
-    let player: NowPlaying
-    let tray: FileTray
-    let volume: VolumeControl
-    let brightness: BrightnessControl
-    let system: SystemStatus
-    let actions: QuickActions
+    let services: NotchServices
+    @ObservedObject var settings: AppSettings
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,37 +12,49 @@ struct ExpandedView: View {
             Group {
                 switch model.tab {
                 case .home:
-                    HomeView(model: model, player: player, system: system, tray: tray)
+                    HomeView(model: model, services: services, settings: settings)
                 case .tray:
-                    TrayView(model: model, tray: tray)
+                    TrayView(model: model, tray: services.tray)
+                case .calendar:
+                    CalendarTabView(calendar: services.calendar)
+                case .clipboard:
+                    ClipboardView(history: services.clipboard, settings: settings)
+                case .mirror:
+                    MirrorView(camera: services.camera)
                 case .controls:
-                    ControlsView(model: model, volume: volume, brightness: brightness, actions: actions)
+                    ControlsView(model: model, services: services)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 22)
             .padding(.top, 10)
             .padding(.bottom, 20)
+            .id(model.tab)
+            .transition(.opacity)
         }
         .foregroundStyle(.white)
+        .animation(.easeOut(duration: 0.18), value: model.tab)
         .frame(width: NotchModel.expandedContentSize.width,
                height: NotchModel.expandedContentSize.height, alignment: .top)
     }
 
     private var header: some View {
         HStack(spacing: 0) {
-            HStack(spacing: 4) {
-                ForEach(NotchTab.allCases) { tab in
+            HStack(spacing: 2) {
+                ForEach(settings.visibleTabs) { tab in
                     TabButton(tab: tab, selected: model.tab == tab) { model.tab = tab }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Color.clear
                 .frame(width: model.geometry.hasNotch ? model.geometry.notchSize.width : 16)
-            StatusCluster(system: system)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+            HStack(spacing: 10) {
+                StatusCluster(system: services.system)
+                IconButton(symbol: "gearshape.fill", help: "Settings") { model.openSettings() }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .padding(.horizontal, 22)
+        .padding(.horizontal, 20)
     }
 }
 
@@ -55,26 +63,43 @@ private struct TabButton: View {
     let selected: Bool
     let action: () -> Void
     @StateObject private var hovering = ViewState<Bool>(false)
+    @Environment(\.look) private var look
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: tab.symbol)
-                    .font(.system(size: 11, weight: .semibold))
-                if selected {
-                    Text(tab.title)
-                        .font(.system(size: 11, weight: .semibold))
-                }
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 24)
-            .background(Capsule().fill(Color.white.opacity(selected ? 0.16 : (hovering.value ? 0.07 : 0))))
-            .foregroundStyle(.white.opacity(selected ? 1 : 0.55))
-            .contentShape(Capsule())
+            Image(systemName: tab.symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 32, height: 24)
+                .background(Capsule().fill(selected ? look.accent.opacity(0.22)
+                                                    : Color.white.opacity(hovering.value ? 0.08 : 0)))
+                .foregroundStyle(selected ? look.accent : .white.opacity(0.5))
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .help(tab.title)
         .onHover { hovering.value = $0 }
         .animation(.easeOut(duration: 0.15), value: selected)
+    }
+}
+
+struct IconButton: View {
+    let symbol: String
+    var help: String = ""
+    let action: () -> Void
+    @StateObject private var hovering = ViewState<Bool>(false)
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(Color.white.opacity(hovering.value ? 0.12 : 0)))
+                .foregroundStyle(.white.opacity(hovering.value ? 0.95 : 0.55))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .onHover { hovering.value = $0 }
     }
 }
 
@@ -89,7 +114,7 @@ private struct StatusCluster: View {
                         .font(.system(size: 11, weight: .medium).monospacedDigit())
                     Image(systemName: batterySymbol(level))
                         .font(.system(size: 13))
-                        .foregroundStyle(level <= 20 && !system.onPower ? .red : .white)
+                        .foregroundStyle(level <= 20 && !system.onPower ? .red : (system.isCharging ? .green : .white))
                 }
                 .foregroundStyle(.white.opacity(0.8))
             }

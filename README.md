@@ -1,54 +1,74 @@
 # NotchDeck
 
-A mission control for the MacBook notch, in the spirit of Alcove. Hover the notch and it opens
-into a panel; move away and it folds back.
+A mission control for the MacBook notch, in the spirit of Alcove, NotchNook, boring.notch, MewNotch
+and Atoll. Hover (or click) the notch and it opens into a themed panel; move away and it folds back.
 
-**Home**: what's playing in Spotify or Music (artwork, scrubber, play/pause/skip), the time and date,
-and a shortcut to the tray.
-**Tray**: drag any file onto the notch (it opens as a drop target mid-drag) and it waits there.
-Drag files back out, double-click to open, right-click to reveal or remove, AirDrop the lot.
-**Controls**: brightness and volume sliders, plus Keep Awake, Dark Mode, Hide Desktop icons,
-Screenshot, Display Off and Lock.
+## Tabs
 
-While collapsed, the notch shows a live activity when music plays (artwork on the left, a visualiser
-on the right) and a brief volume or brightness HUD when you press the keys.
+| Tab | What it does |
+|---|---|
+| **Home** | Now playing from Spotify or Music (artwork, scrubber, controls, visualiser) beside a widget of your choice: clock with weather and next event, a big weather card, your next event, or system stats |
+| **Tray** | Drag files onto the notch to stash them; drag out, double-click to open, AirDrop. Optionally keeps its own copy |
+| **Calendar** | Today's and tomorrow's events from every calendar in Calendar.app, colour-coded |
+| **Clipboard** | Your recent copies (text, images, files); click to copy again. In memory only, skips password-manager items |
+| **Mirror** | The front camera, for a check before calls; off the moment you leave the tab |
+| **Controls** | Brightness and volume, a focus timer, CPU/RAM/disk, Keep Awake, Dark Mode, Hide Desktop, Screenshot, Display Off, Lock |
+
+Each tab except Home can be switched off in Settings → Modules. Two-finger swipe moves between tabs.
+
+## Around the closed notch
+
+- **Music live activity**: album art on the left, a visualiser (bars, wave or dots) on the right.
+- **Timer**: a progress ring and the time left while a focus timer runs.
+- **Drop-down activities**: charger connected or removed (with level), low battery at 20/10/5%,
+  Bluetooth devices connecting (AirPods get their own icon), a calendar event five minutes out,
+  timer done.
+- **HUD**: replaces the macOS volume and brightness pop-up, as wings or a progress bar.
+
+## Settings
+
+Open from the gear in the panel, the menu bar icon, or ⌘, in its menu.
+
+- **General**: open on hover or click, hover delay, swipe between tabs, haptics, launch at login.
+- **Appearance**: seven themes (Midnight, Aurora, Ember, Ocean, Forest, Sakura, Graphite), accent
+  from album art / theme / custom colour, corner roundness, shadow, the Home widget.
+- **Modules**, **Media & HUD** (visualiser, HUD style, key step size), **Live Activities**,
+  **Tray & Clipboard**, **Weather** (city and units), **About** (permission shortcuts).
+
+Every theme is pure black at the top edge so the panel stays seamless with the hardware notch.
 
 ## Build and run
 
 Needs macOS 14+ and the Swift toolchain (the Command Line Tools are enough; Xcode is not required).
 
 ```bash
-./scripts/build-app.sh            # builds build/NotchDeck.app
-./scripts/build-app.sh --install  # also copies it to /Applications and launches it
+scripts/make-signing-identity.sh     # once: a local identity so permissions survive rebuilds
+scripts/build-app.sh --install       # build, copy to /Applications, launch
 ```
 
-Two flags help when working on it:
+Handy flags:
 
 ```bash
-build/NotchDeck.app/Contents/MacOS/NotchDeck --render-previews previews   # every state to PNG, no window
-open build/NotchDeck.app --args --open tray                               # open a tab on launch
+build/NotchDeck.app/Contents/MacOS/NotchDeck --render-previews previews   # every state, theme and Settings to PNG
+open /Applications/NotchDeck.app --args --open calendar                   # open a tab on launch
+open /Applications/NotchDeck.app --args --settings                        # open Settings on launch
 ```
 
-(`--render-previews` uses SwiftUI's `ImageRenderer`, which draws the drop target as a yellow
-placeholder and skips the tray's scroll view; the real panel has neither problem.)
-
-The menu bar icon (a laptop) opens any tab, toggles Launch at Login (works once the app is in
-/Applications), and quits.
+`--render-previews` uses SwiftUI's `ImageRenderer`, which draws the drop target as a yellow
+placeholder and skips scroll views (tray, clipboard, calendar lists, Settings panes); the real app has
+neither problem.
 
 ## Permissions
 
-- **Automation** (asked on first use): to read and control Spotify/Music and to toggle Dark Mode
-  through System Events. If you rebuild, macOS may ask again because the ad-hoc signature changes.
-- **Accessibility**: to replace the macOS volume and brightness HUD. NotchDeck catches those keys
-  before macOS does, changes the level itself, and shows only the notch HUD. Without the permission
-  (or with "Replace macOS Volume & Brightness HUD" unticked in the menu) the keys behave normally and
-  both HUDs show. Option+key still opens Sound/Displays settings; Shift+Option+key steps by quarters.
-  Outputs whose volume macOS can't set, and external displays, fall back to the system HUD.
-- Mouse tracking uses global mouse monitors, which need no permission.
+| Permission | For | Asked when |
+|---|---|---|
+| Accessibility | replacing the volume/brightness HUD | on launch, if the HUD option is on |
+| Automation | Spotify, Music, Dark Mode | first use |
+| Calendars | Calendar tab, event reminders | you press Connect |
+| Camera | Mirror tab | you open it |
+| Bluetooth | device announcements | on launch, if that activity is on |
 
-Run `scripts/make-signing-identity.sh` once: it creates a self-signed "NotchDeck Local" identity, and
-the build script then signs with it, so permissions survive rebuilds (ad-hoc signatures change on
-every build and macOS forgets the grants).
+Weather uses Open-Meteo (no account); only the city name you type leaves the Mac.
 
 ## How it works
 
@@ -59,16 +79,11 @@ every build and macOS forgets the grants).
 | Drag detection | the drag pasteboard's `changeCount` while the mouse button is held |
 | Now playing | AppleScript against running players only (MediaRemote refuses non-Apple clients since 15.4) |
 | Volume | CoreAudio virtual main volume and mute on the default output device, with listeners |
-| Brightness | private `DisplayServices` (built-in display only; external monitors need DDC) |
-| Keep Awake | an `IOPMAssertion` that prevents display sleep |
+| Brightness | private `DisplayServices` (built-in display only) |
 | System HUD | a `CGEventTap` on `NX_SYSDEFINED` media keys; handled keys are swallowed |
-| Lock | private `SACLockScreenImmediate`, falling back to `pmset displaysleepnow` |
+| Charging | `IOPSNotificationCreateRunLoopSource` |
+| Bluetooth | `IOBluetoothDevice` connect/disconnect notifications |
+| Calendar | EventKit; Weather: Open-Meteo; Stats: `host_statistics`; Mirror: AVFoundation |
 
 `@State` is not used: on the macOS 27 SDK it is a macro whose plugin ships only with Xcode, so
 view-local state lives in a small `ViewState` box (`Sources/NotchDeck/Views/ViewState.swift`).
-
-## Ideas for next
-
-Calendar's next event (EventKit), a clipboard history tab, browser media through the
-`mediaremote-adapter` approach, a charging live activity, external display brightness over DDC,
-a global hotkey, and a settings window.

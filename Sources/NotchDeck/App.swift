@@ -21,9 +21,12 @@ enum Main {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var controller: NotchController?
     private var statusItem: NSStatusItem?
+    private let settingsWindow = SettingsWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         controller = NotchController()
+        controller?.onOpenSettings = { [weak self] in self?.settingsWindow.show() }
+        if CommandLine.arguments.contains("--settings") { settingsWindow.show() }
 
         // `--open <tab>` opens the notch on launch (handy for screenshots and for testing).
         let args = CommandLine.arguments
@@ -43,6 +46,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        menu.addItem(.separator())
         for tab in NotchTab.allCases {
             let entry = NSMenuItem(title: "Open \(tab.title)", action: #selector(openTab(_:)), keyEquivalent: "")
             entry.target = self
@@ -53,9 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let hud = NSMenuItem(title: "Replace macOS Volume & Brightness HUD", action: #selector(toggleSystemHUD), keyEquivalent: "")
         hud.target = self
-        hud.state = controller?.replacesSystemHUD == true ? .on : .off
+        hud.state = AppSettings.shared.replaceSystemHUD ? .on : .off
         menu.addItem(hud)
-        if controller?.replacesSystemHUD == true, !MediaKeyInterceptor.isTrusted {
+        if AppSettings.shared.replaceSystemHUD, !MediaKeyInterceptor.isTrusted {
             let hint = NSMenuItem(title: "Allow NotchDeck in Accessibility…", action: #selector(openAccessibility), keyEquivalent: "")
             hint.target = self
             menu.addItem(hint)
@@ -75,9 +82,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller?.expand(tab: tab, sticky: true)
     }
 
+    @objc private func openSettings() {
+        settingsWindow.show()
+    }
+
     @objc private func toggleSystemHUD() {
-        guard let controller else { return }
-        controller.replacesSystemHUD.toggle()
+        AppSettings.shared.replaceSystemHUD.toggle()
     }
 
     @objc private func openAccessibility() {

@@ -7,11 +7,31 @@ final class SystemStatus: ObservableObject {
     @Published private(set) var isCharging = false
     @Published private(set) var onPower = false
 
-    private var timer: Timer?
+    /// Fired when the power source flips (plugged in or unplugged) or the battery runs low.
+    var onPowerEvent: ((_ pluggedIn: Bool, _ level: Int) -> Void)?
+    var onLowBattery: ((_ level: Int) -> Void)?
 
-    init() {
+    private var timer: Timer?
+    private var hasReading = false
+
+    init(live: Bool = true) {
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.refresh() }
+        guard live else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refresh() }
+        // Instant updates when the charger is connected or the level changes.
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        if let source = IOPSNotificationCreateRunLoopSource({ context in
+            guard let context else { return }
+            Unmanaged<SystemStatus>.fromOpaque(context).takeUnretainedValue().refresh()
+        }, context)?.takeRetainedValue() {
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+        }
+    }
+
+    func showPreview(level: Int, charging: Bool) {
+        batteryLevel = level
+        isCharging = charging
+        onPower = charging
     }
 
     func refresh() {
@@ -22,9 +42,22 @@ final class SystemStatus: ObservableObject {
                   description[kIOPSTypeKey] as? String == kIOPSInternalBatteryType else { continue }
             let current = description[kIOPSCurrentCapacityKey] as? Int ?? 0
             let max = description[kIOPSMaxCapacityKey] as? Int ?? 100
-            batteryLevel = max > 0 ? Int((Double(current) / Double(max) * 100).rounded()) : nil
+            let level = max > 0 ? Int((Double(current) / Double(max) * 100).rounded()) : 0
+            let power = description[kIOPSPowerSourceStateKey] as? String == kIOPSACPowerValue
+            let previousLevel = batteryLevel
+            let previousPower = onPower
+
+            batteryLevel = level
             isCharging = description[kIOPSIsChargingKey] as? Bool ?? false
-            onPower = description[kIOPSPowerSourceStateKey] as? String == kIOPSACPowerValue
+            onPower = power
+
+            if hasReading {
+                if power != previousPower { onPowerEvent?(power, level) }
+                if !power, let previousLevel, [20, 10, 5].contains(where: { previousLevel > $0 && level <= $0 }) {
+                    onLowBattery?(level)
+                }
+            }
+            hasReading = true
             return
         }
         batteryLevel = nil

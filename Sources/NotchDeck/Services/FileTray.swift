@@ -25,21 +25,47 @@ final class FileTray: ObservableObject {
         }
     }
 
+    /// Where dropped files are copied when "Copy dropped files into the tray" is on.
+    static let storage: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("NotchDeck/Tray", isDirectory: true)
+
     func add(_ urls: [URL]) {
-        for url in urls where !items.contains(url) {
-            items.append(url)
+        let copy = persists && AppSettings.shared.copyDroppedFiles
+        for url in urls {
+            let stored = copy ? (Self.copyIntoStorage(url) ?? url) : url
+            if !items.contains(stored) { items.append(stored) }
         }
         save()
     }
 
     func remove(_ url: URL) {
         items.removeAll { $0 == url }
+        Self.deleteIfStored(url)
         save()
     }
 
     func clear() {
+        items.forEach(Self.deleteIfStored)
         items.removeAll()
         save()
+    }
+
+    private static func copyIntoStorage(_ url: URL) -> URL? {
+        guard !url.path.hasPrefix(storage.path) else { return url }
+        let folder = storage.appendingPathComponent(UUID().uuidString.prefix(8).description, isDirectory: true)
+        let target = folder.appendingPathComponent(url.lastPathComponent)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: url, to: target)
+            return target
+        } catch {
+            return nil
+        }
+    }
+
+    private static func deleteIfStored(_ url: URL) {
+        guard url.path.hasPrefix(storage.path) else { return }
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
     }
 
     func open(_ url: URL) {
