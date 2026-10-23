@@ -19,20 +19,33 @@ enum Main {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private var controller: NotchController?
+    private var hub: NotchHub?
     private var statusItem: NSStatusItem?
     private let settingsWindow = SettingsWindowController()
+    private let onboarding = OnboardingWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        controller = NotchController()
-        controller?.onOpenSettings = { [weak self] in self?.settingsWindow.show() }
+        let hub = NotchHub()
+        self.hub = hub
+        settingsWindow.services = hub.services
+        hub.onOpenSettings = { [weak self] in self?.settingsWindow.show() }
         if CommandLine.arguments.contains("--settings") { settingsWindow.show() }
+        // `--test-ring` rings a sample alarm for five seconds (for checking the ringing card).
+        if CommandLine.arguments.contains("--test-ring") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                hub.services.clock.ring(.alarm(Alarm(hour: 7, minute: 30, label: "Test alarm")))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { hub.services.clock.stopRinging() }
+            }
+        }
+        if !AppSettings.shared.onboarded || CommandLine.arguments.contains("--onboarding") {
+            onboarding.show(settings: .shared) { [weak self] in self?.settingsWindow.show() }
+        }
 
         // `--open <tab>` opens the notch on launch (handy for screenshots and for testing).
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--open"), args.count > i + 1, let tab = NotchTab(rawValue: args[i + 1]) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                self?.controller?.expand(tab: tab, sticky: true)
+                self?.hub?.expand(tab: tab, sticky: true)
             }
         }
 
@@ -49,8 +62,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+        let welcome = NSMenuItem(title: "Welcome & Permissions…", action: #selector(openOnboarding), keyEquivalent: "")
+        welcome.target = self
+        menu.addItem(welcome)
         menu.addItem(.separator())
-        for tab in NotchTab.allCases {
+        for tab in AppSettings.shared.visibleTabs {
             let entry = NSMenuItem(title: "Open \(tab.title)", action: #selector(openTab(_:)), keyEquivalent: "")
             entry.target = self
             entry.representedObject = tab.rawValue
@@ -79,7 +95,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openTab(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let tab = NotchTab(rawValue: raw) else { return }
-        controller?.expand(tab: tab, sticky: true)
+        hub?.expand(tab: tab, sticky: true)
+    }
+
+    @objc private func openOnboarding() {
+        onboarding.show(settings: .shared) { [weak self] in self?.settingsWindow.show() }
     }
 
     @objc private func openSettings() {

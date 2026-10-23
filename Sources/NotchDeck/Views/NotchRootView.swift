@@ -1,10 +1,12 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The notch outline: flared "ears" at the top corners and rounded bottom corners.
+/// The notch outline: flared "ears" at the top corners and rounded bottom corners. With no ears
+/// (an island) it is a rounded rectangle.
 struct NotchShape: Shape {
     var topRadius: CGFloat
     var bottomRadius: CGFloat
+    var island = false
 
     var animatableData: AnimatablePair<CGFloat, CGFloat> {
         get { AnimatablePair(topRadius, bottomRadius) }
@@ -15,6 +17,9 @@ struct NotchShape: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
+        if island {
+            return Path(roundedRect: rect, cornerRadius: min(bottomRadius, rect.height / 2), style: .continuous)
+        }
         let t = topRadius
         let b = min(bottomRadius, rect.height / 2, (rect.width - 2 * t) / 2)
         var path = Path()
@@ -47,15 +52,16 @@ struct NotchRootView: View {
     }
 
     var body: some View {
-        let shape = NotchShape(topRadius: model.topRadius, bottomRadius: model.bottomRadius)
+        let shape = NotchShape(topRadius: model.topRadius, bottomRadius: model.bottomRadius, island: model.isIsland)
         let look = look
         VStack(spacing: 0) {
+            Color.clear.frame(height: model.geometry.islandGap)
             ZStack(alignment: .top) {
                 if model.isExpanded {
                     shape.fill(look.theme.background)
                     if let glow = look.theme.glow {
                         RadialGradient(colors: [glow.opacity(0.22), .clear], center: .bottom,
-                                       startRadius: 0, endRadius: 320)
+                                       startRadius: 0, endRadius: 340)
                     }
                 } else {
                     shape.fill(Color.black)
@@ -66,7 +72,9 @@ struct NotchRootView: View {
             .frame(width: model.shapeSize.width, height: model.shapeSize.height, alignment: .top)
             .clipShape(shape)
             .overlay(shape.stroke(look.accent.opacity(model.dropTargeted ? 0.7 : 0), lineWidth: 1.5))
-            .shadow(color: .black.opacity(model.isExpanded && settings.shadow ? 0.55 : 0), radius: 18, y: 8)
+            .overlay(shape.stroke(Color.white.opacity(model.isIsland && !model.isExpanded ? 0.08 : 0), lineWidth: 1))
+            .shadow(color: .black.opacity((model.isExpanded || model.isIsland) && settings.shadow ? 0.55 : 0),
+                    radius: 18, y: 8)
             .onDrop(of: [UTType.fileURL], isTargeted: $model.dropTargeted) { providers in
                 services.tray.add(providers: providers)
                 model.tab = .tray
@@ -90,11 +98,28 @@ struct NotchRootView: View {
                     insertion: .opacity.combined(with: .scale(scale: 0.92, anchor: .top))
                         .animation(.easeOut(duration: 0.22).delay(0.06)),
                     removal: .opacity.animation(.easeIn(duration: 0.08))))
+        case .ringing(let ringing):
+            RingingView(ringing: ringing, clock: services.clock, notch: notch)
+                .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
         case .live:
-            LiveActivityView(player: player, notch: notch)
+            LiveActivityView(player: player, notch: notch, privacy: model.privacy)
                 .transition(.opacity)
         case .timer:
             TimerActivityView(timer: services.timer, notch: notch)
+                .transition(.opacity)
+        case .stopwatch:
+            StopwatchActivityView(clock: services.clock, notch: notch)
+                .transition(.opacity)
+        case .countdown:
+            if let event = model.countdown {
+                CountdownActivityView(event: event, notch: notch)
+                    .transition(.opacity)
+            }
+        case .download:
+            DownloadActivityView(downloads: services.downloads, notch: notch)
+                .transition(.opacity)
+        case .privacy:
+            PrivacyActivityView(privacy: model.privacy, notch: notch)
                 .transition(.opacity)
         case .activity(let activity):
             DropActivityView(activity: activity, notch: notch)
@@ -108,20 +133,37 @@ struct NotchRootView: View {
     }
 }
 
-// MARK: Collapsed states
+// MARK: Closed-notch states
+
+/// Two wings either side of the hardware notch.
+private struct Wings<Left: View, Right: View>: View {
+    let notch: CGSize
+    let width: CGFloat
+    @ViewBuilder let left: Left
+    @ViewBuilder let right: Right
+
+    var body: some View {
+        HStack(spacing: 0) {
+            left.frame(width: width)
+            Spacer(minLength: notch.width)
+            right.frame(width: width)
+        }
+        .frame(height: notch.height)
+    }
+}
 
 /// Collapsed, while music plays: artwork to the left of the notch, a visualiser to the right.
 struct LiveActivityView: View {
     @ObservedObject var player: NowPlaying
     let notch: CGSize
+    var privacy = PrivacyState()
     @Environment(\.look) private var look
 
     var body: some View {
-        HStack(spacing: 0) {
+        Wings(notch: notch, width: notch.height + 4) {
             ArtworkView(image: player.artwork, size: notch.height - 12, corner: 5)
-                .frame(width: notch.height, alignment: .center)
-            Spacer(minLength: notch.width)
-            Group {
+        } right: {
+            ZStack(alignment: .topTrailing) {
                 if look.visualizer == .off {
                     Image(systemName: "music.note")
                         .font(.system(size: 12, weight: .bold))
@@ -129,11 +171,11 @@ struct LiveActivityView: View {
                 } else {
                     Visualizer(style: look.visualizer, color: look.accent)
                 }
+                if privacy.any {
+                    PrivacyDots(privacy: privacy).scaleEffect(0.7).offset(x: 6, y: -9)
+                }
             }
-            .frame(width: notch.height, alignment: .center)
         }
-        .padding(.horizontal, 4)
-        .frame(height: notch.height)
     }
 }
 
@@ -196,27 +238,205 @@ struct TimerActivityView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.5)) { context in
-            HStack(spacing: 0) {
-                ZStack {
-                    Circle().stroke(look.accent.opacity(0.25), lineWidth: 2.5)
-                    Circle()
-                        .trim(from: 0, to: timer.progress(at: context.date))
-                        .stroke(look.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    Image(systemName: timer.isPaused ? "pause.fill" : "timer")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(look.accent)
-                }
-                .frame(width: 18, height: 18)
-                .frame(width: 62)
-                Spacer(minLength: notch.width)
+            Wings(notch: notch, width: 62) {
+                ProgressRing(progress: timer.progress(at: context.date), color: look.accent,
+                             symbol: timer.isPaused ? "pause.fill" : "timer")
+            } right: {
                 Text(FocusTimer.clock(timer.remaining(at: context.date)))
                     .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundStyle(timer.isPaused ? .white.opacity(0.5) : .white)
-                    .frame(width: 62)
             }
-            .frame(height: notch.height)
         }
+    }
+}
+
+struct StopwatchActivityView: View {
+    @ObservedObject var clock: ClockCenter
+    let notch: CGSize
+    @Environment(\.look) private var look
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.1)) { context in
+            Wings(notch: notch, width: 74) {
+                Image(systemName: clock.stopwatchRunning ? "stopwatch.fill" : "stopwatch")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(clock.stopwatchRunning ? look.accent : .white.opacity(0.5))
+            } right: {
+                Text(ClockCenter.stopwatchText(clock.stopwatchElapsed(at: context.date)))
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(clock.stopwatchRunning ? .white : .white.opacity(0.5))
+            }
+        }
+    }
+}
+
+/// Collapsed, in the ten minutes before a meeting.
+struct CountdownActivityView: View {
+    let event: CalendarEvent
+    let notch: CGSize
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 15)) { context in
+            Wings(notch: notch, width: 118) {
+                HStack(spacing: 6) {
+                    Circle().fill(event.color).frame(width: 7, height: 7)
+                    Text(event.title)
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .padding(.leading, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } right: {
+                Text("in \(max(Int(ceil(event.start.timeIntervalSince(context.date) / 60)), 0)) min")
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(event.color)
+            }
+            .foregroundStyle(.white)
+        }
+    }
+}
+
+struct DownloadActivityView: View {
+    @ObservedObject var downloads: DownloadWatcher
+    let notch: CGSize
+    @Environment(\.look) private var look
+
+    var body: some View {
+        let download = downloads.active.first
+        Wings(notch: notch, width: 62) {
+            ProgressRing(progress: download?.fraction ?? 0, color: look.accent, symbol: "arrow.down",
+                         indeterminate: download?.fraction == nil)
+        } right: {
+            Group {
+                if let fraction = download?.fraction {
+                    Text("\(Int(fraction * 100))%")
+                } else {
+                    Text(DownloadWatcher.sizeText(download?.bytes ?? 0))
+                }
+            }
+            .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
+            .foregroundStyle(.white)
+            .lineLimit(1)
+        }
+    }
+}
+
+struct PrivacyActivityView: View {
+    let privacy: PrivacyState
+    let notch: CGSize
+
+    var body: some View {
+        Wings(notch: notch, width: 18) {
+            Color.clear
+        } right: {
+            PrivacyDots(privacy: privacy, vertical: true)
+        }
+    }
+}
+
+struct PrivacyDots: View {
+    let privacy: PrivacyState
+    var vertical = false
+
+    var body: some View {
+        let layout = vertical ? AnyLayout(VStackLayout(spacing: 3)) : AnyLayout(HStackLayout(spacing: 3))
+        layout {
+            if privacy.camera { Circle().fill(Color.green).frame(width: 6, height: 6).help("Camera in use") }
+            if privacy.microphone { Circle().fill(Color.orange).frame(width: 6, height: 6).help("Microphone in use") }
+            if privacy.screen { Circle().fill(Color.purple).frame(width: 6, height: 6).help("Screen being recorded") }
+            if privacy.micMuted {
+                Image(systemName: "mic.slash.fill")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.red)
+                    .help("Microphone muted")
+            }
+        }
+    }
+}
+
+struct ProgressRing: View {
+    let progress: Double
+    let color: Color
+    let symbol: String
+    var indeterminate = false
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(color.opacity(0.25), lineWidth: 2.5)
+            if indeterminate {
+                TimelineView(.animation) { context in
+                    Circle()
+                        .trim(from: 0, to: 0.25)
+                        .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(context.date.timeIntervalSinceReferenceDate * 360))
+                }
+            } else {
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            Image(systemName: symbol)
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(color)
+        }
+        .frame(width: 18, height: 18)
+    }
+}
+
+/// An alarm or a finished timer: stays until you snooze or stop it.
+struct RingingView: View {
+    let ringing: Ringing
+    @ObservedObject var clock: ClockCenter
+    let notch: CGSize
+    @Environment(\.look) private var look
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: notch.height)
+            HStack(spacing: 12) {
+                TimelineView(.animation(minimumInterval: 1 / 20)) { context in
+                    let t = context.date.timeIntervalSinceReferenceDate
+                    Image(systemName: ringing.symbol)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(look.accent)
+                        .rotationEffect(.degrees(sin(t * 28) * 12))
+                        .frame(width: 40, height: 40)
+                        .background(Circle().fill(look.accent.opacity(0.18)))
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(ringing.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(1)
+                    Text(ringing.detail)
+                        .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                Spacer(minLength: 8)
+                Button("Snooze") { clock.snooze() }
+                    .buttonStyle(RingButtonStyle(fill: Color.white.opacity(0.14), text: .white))
+                Button("Stop") { clock.stopRinging() }
+                    .buttonStyle(RingButtonStyle(fill: look.accent, text: .black))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 20)
+            .frame(height: 62)
+        }
+    }
+}
+
+private struct RingButtonStyle: ButtonStyle {
+    let fill: Color
+    let text: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(text)
+            .padding(.horizontal, 14)
+            .frame(height: 30)
+            .background(Capsule().fill(fill.opacity(configuration.isPressed ? 0.7 : 1)))
+            .contentShape(Capsule())
     }
 }
 
@@ -264,7 +484,7 @@ struct DropActivityView: View {
     }
 }
 
-/// Collapsed, right after a volume or brightness change.
+/// Collapsed, right after a volume, brightness or keyboard-light change.
 struct HUDView: View {
     let hud: HUDState
     let notch: CGSize
@@ -290,17 +510,15 @@ struct HUDView: View {
     }
 
     private var wings: some View {
-        HStack(spacing: 0) {
-            icon.frame(width: 100)
-            Spacer(minLength: notch.width)
+        Wings(notch: notch, width: 100) {
+            icon
+        } right: {
             HStack(spacing: 7) {
                 LevelBar(level: hud.level, color: look.accent).frame(width: 56, height: 5)
                 percent
             }
-            .frame(width: 100)
         }
         .foregroundStyle(.white)
-        .frame(height: notch.height)
     }
 
     private var bar: some View {

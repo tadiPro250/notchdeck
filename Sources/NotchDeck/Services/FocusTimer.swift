@@ -1,6 +1,7 @@
 import AppKit
 
-/// A countdown that lives in the notch: the collapsed notch shows the time left.
+/// A countdown that lives in the notch: the collapsed notch shows the time left, and it rings
+/// through `ClockCenter` when it runs out.
 final class FocusTimer: ObservableObject {
     @Published private(set) var endDate: Date?
     @Published private(set) var pausedRemaining: TimeInterval?
@@ -58,7 +59,6 @@ final class FocusTimer: ObservableObject {
         ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self, let end = self.endDate, Date() >= end else { return }
             self.cancel()
-            NSSound(named: "Glass")?.play()
             self.onFinish?()
         }
     }

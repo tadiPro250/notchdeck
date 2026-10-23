@@ -3,16 +3,19 @@ import ServiceManagement
 import SwiftUI
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, appearance, modules, media, activities, tray, weather, about
+    case general, appearance, displays, modules, media, activities, clock, desk, tray, weather, about
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .general: "General"
         case .appearance: "Appearance"
+        case .displays: "Displays"
         case .modules: "Modules"
         case .media: "Media & HUD"
         case .activities: "Live Activities"
+        case .clock: "Clock"
+        case .desk: "Desk"
         case .tray: "Tray & Clipboard"
         case .weather: "Weather"
         case .about: "About"
@@ -23,9 +26,12 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general: "gearshape.fill"
         case .appearance: "paintpalette.fill"
+        case .displays: "display.2"
         case .modules: "square.grid.2x2.fill"
         case .media: "speaker.wave.2.fill"
         case .activities: "bell.badge.fill"
+        case .clock: "alarm.fill"
+        case .desk: "square.and.pencil"
         case .tray: "tray.full.fill"
         case .weather: "cloud.sun.fill"
         case .about: "info.circle.fill"
@@ -36,9 +42,12 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general: .gray
         case .appearance: .pink
+        case .displays: .teal
         case .modules: .indigo
         case .media: .orange
         case .activities: .red
+        case .clock: .orange
+        case .desk: .yellow
         case .tray: .blue
         case .weather: .cyan
         case .about: .secondary
@@ -48,11 +57,12 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
 final class SettingsWindowController {
     private var window: NSWindow?
+    var services: NotchServices?
 
     func show() {
         if window == nil {
-            let hosting = NSHostingView(rootView: SettingsView(settings: .shared))
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 540),
+            let hosting = NSHostingView(rootView: SettingsView(settings: .shared, services: services))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
                                   styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
                                   backing: .buffered, defer: false)
             window.title = "NotchDeck Settings"
@@ -69,6 +79,7 @@ final class SettingsWindowController {
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+    var services: NotchServices?
     @StateObject private var pane = ViewState<SettingsPane>(.appearance)
 
     var body: some View {
@@ -122,20 +133,23 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(minWidth: 760, minHeight: 540)
+        .frame(minWidth: 800, minHeight: 600)
     }
 
     @ViewBuilder
     private var content: some View {
         switch pane.value {
         case .general: GeneralPane(settings: settings)
-        case .appearance: AppearancePane(settings: settings)
+        case .appearance: AppearancePane(settings: settings, services: services)
+        case .displays: DisplaysPane(settings: settings)
         case .modules: ModulesPane(settings: settings)
         case .media: MediaPane(settings: settings)
-        case .activities: ActivitiesPane(settings: settings)
+        case .activities: ActivitiesPane(settings: settings, focus: services?.focus)
+        case .clock: ClockPane(settings: settings)
+        case .desk: DeskPane(settings: settings)
         case .tray: TrayPane(settings: settings)
         case .weather: WeatherPane(settings: settings)
-        case .about: AboutPane()
+        case .about: AboutPane(settings: settings, updates: services?.updates ?? UpdateChecker())
         }
     }
 }
@@ -216,6 +230,13 @@ private struct GeneralPane: View {
             }
             .opacity(settings.openTrigger == .hover ? 1 : 0.4)
             Divider()
+            Row(title: "Keyboard shortcut", detail: "Opens and closes the notch from anywhere. While open: ← → switch tabs, ⌘1–9 jump, Esc closes.") {
+                Picker("", selection: $settings.hotKey) {
+                    ForEach(HotKeyChoice.allCases) { Text($0.title).tag($0) }
+                }
+                .labelsHidden().frame(width: 130)
+            }
+            Divider()
             ToggleRow(title: "Swipe between tabs", detail: "Two-finger swipe left or right on the open notch.",
                       isOn: $settings.swipeBetweenTabs)
             Divider()
@@ -238,8 +259,16 @@ private struct GeneralPane: View {
 
 private struct AppearancePane: View {
     @ObservedObject var settings: AppSettings
+    var services: NotchServices?
 
     var body: some View {
+        if let services {
+            Card(title: "Live preview") {
+                NotchPreview(settings: settings, services: services)
+                    .frame(height: 190)
+                    .padding(.vertical, 8)
+            }
+        }
         Card(title: "Theme") {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
                 ForEach(Theme.all) { theme in
@@ -282,6 +311,134 @@ private struct AppearancePane: View {
                 }
                 .labelsHidden().frame(width: 150)
             }
+        }
+    }
+}
+
+extension AboutPane {
+    var updateText: String {
+        switch updates.state {
+        case .idle: return "Version \(UpdateChecker.currentVersion)"
+        case .checking: return "Checking…"
+        case .upToDate: return "You're up to date (\(UpdateChecker.currentVersion))"
+        case .available(let version, _): return "Version \(version) is available"
+        case .failed(let message): return message
+        }
+    }
+}
+
+/// A scaled-down, live copy of the open notch for the Appearance pane.
+private struct NotchPreview: View {
+    @ObservedObject var settings: AppSettings
+    let services: NotchServices
+    @StateObject private var model = PreviewModelBox()
+
+    var body: some View {
+        GeometryReader { geo in
+            let size = NotchController.windowSize
+            let scale = min(geo.size.width / size.width, geo.size.height / (NotchModel.expandedContentSize.height + 40))
+            ZStack(alignment: .top) {
+                LinearGradient(colors: [Color(red: 0.35, green: 0.45, blue: 0.75), Color(red: 0.75, green: 0.5, blue: 0.7)],
+                               startPoint: .top, endPoint: .bottom)
+                NotchRootView(model: model.model(settings: settings), services: services, settings: settings,
+                              player: services.player)
+                    .frame(width: size.width, height: size.height)
+                    .scaleEffect(scale, anchor: .top)
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                    .allowsHitTesting(false)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+}
+
+private final class PreviewModelBox: ObservableObject {
+    private var stored: NotchModel?
+
+    func model(settings: AppSettings) -> NotchModel {
+        if let stored { return stored }
+        let geometry = NotchGeometry(screenFrame: CGRect(x: 0, y: 0, width: 1470, height: 956),
+                                     notchSize: CGSize(width: 179, height: 32), hasNotch: true)
+        let model = NotchModel(geometry: geometry, settings: settings)
+        model.setExpanded(true)
+        stored = model
+        return model
+    }
+}
+
+private struct DisplaysPane: View {
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        Card(title: "Where the notch appears") {
+            Row(title: "Show on") {
+                Picker("", selection: $settings.displayMode) {
+                    ForEach(DisplayMode.allCases) { Text($0.title).tag($0) }
+                }
+                .labelsHidden().frame(width: 190)
+            }
+            Divider()
+            ToggleRow(title: "Island style on displays without a notch",
+                      detail: "A floating pill just below the top edge, like the Dynamic Island. Off: a notch attached to the top.",
+                      isOn: $settings.islandOnPlainDisplays)
+        }
+        Card(title: "Lock screen") {
+            ToggleRow(title: "Show a widget on the lock screen",
+                      detail: "Now playing with controls, battery and weather while your Mac is locked.",
+                      isOn: $settings.lockScreenWidget)
+        }
+    }
+}
+
+private struct ClockPane: View {
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        Card(title: "Alarms and timer") {
+            Row(title: "Sound", detail: "Plays on a loop until you snooze or stop (at most five minutes).") {
+                HStack(spacing: 6) {
+                    Picker("", selection: $settings.alarmSound) {
+                        ForEach(AppSettings.systemSounds, id: \.self) { Text($0).tag($0) }
+                    }
+                    .labelsHidden().frame(width: 130)
+                    Button {
+                        NSSound(named: NSSound.Name(settings.alarmSound))?.play()
+                    } label: { Image(systemName: "play.fill") }
+                }
+            }
+            Divider()
+            Row(title: "Snooze for") {
+                Stepper("\(settings.snoozeMinutes) min", value: $settings.snoozeMinutes, in: 1...30).frame(width: 120)
+            }
+        }
+        Card {
+            Text("Alarms ring while NotchDeck is running and your Mac is awake. A sleeping Mac can't ring.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .padding(.vertical, 10)
+        }
+    }
+}
+
+private struct DeskPane: View {
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        Card(title: "Script widget") {
+            Row(title: "Command", detail: "Runs in zsh from your home folder; output shows in Desk → Script.") {
+                TextField("e.g. git -C ~/code/app status -sb", text: $settings.scriptCommand)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(width: 280)
+            }
+            Divider()
+            Row(title: "Refresh every") {
+                Stepper("\(settings.scriptInterval) s", value: $settings.scriptInterval, in: 5...600, step: 5).frame(width: 120)
+            }
+        }
+        Card {
+            Text("Notes save automatically to ~/Library/Application Support/NotchDeck/notes.txt. To-do uses your default Reminders list.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .padding(.vertical, 10)
         }
     }
 }
@@ -344,9 +501,12 @@ private struct ModulesPane: View {
         case .home: "Now playing, the time, weather and your next event. Always on."
         case .tray: "A shelf for files: drag in, drag out, AirDrop."
         case .calendar: "Today's and tomorrow's events."
+        case .clock: "Alarms, a timer and a stopwatch, all of which show in the closed notch."
+        case .desk: "Notes, your Apple Reminders, Shortcuts and a shell-command widget."
+        case .system: "CPU, GPU, memory, disk, network speed, battery health and device batteries."
         case .clipboard: "Your recent copies, one click to copy again."
         case .mirror: "The front camera, for a quick check before calls."
-        case .controls: "Brightness, volume, timer, system stats and quick toggles."
+        case .controls: "Brightness (built-in, external, keyboard), volume, sound output, mic mute and quick toggles."
         }
     }
 }
@@ -365,6 +525,9 @@ private struct MediaPane: View {
             Divider()
             ToggleRow(title: "Show live activity", detail: "Album art and the visualiser around the closed notch while music plays.",
                       isOn: $settings.showLiveActivity)
+            Divider()
+            ToggleRow(title: "Synced lyrics", detail: "The current line under the song, from LRCLIB. The song title and artist are sent to lrclib.net.",
+                      isOn: $settings.showLyrics)
         }
         Card(title: "Volume and brightness") {
             ToggleRow(title: "Replace the macOS HUD",
@@ -396,6 +559,7 @@ private struct MediaPane: View {
 
 private struct ActivitiesPane: View {
     @ObservedObject var settings: AppSettings
+    var focus: FocusWatcher?
 
     var body: some View {
         Card(title: "Announce in the notch") {
@@ -407,6 +571,28 @@ private struct ActivitiesPane: View {
             Divider()
             ToggleRow(title: "Upcoming events", detail: "Five minutes before a calendar event starts.",
                       isOn: $settings.calendarActivity)
+            Divider()
+            ToggleRow(title: "Meeting countdown", detail: "The closed notch counts down the last ten minutes before a meeting.",
+                      isOn: $settings.calendarCountdown)
+            Divider()
+            ToggleRow(title: "Reminders due", detail: "An alert with a chime when an Apple Reminder comes due.",
+                      isOn: $settings.reminderActivity)
+            Divider()
+            ToggleRow(title: "Accessory battery", detail: "AirPods (left, right, case), mice and keyboards show their level when they connect.",
+                      isOn: $settings.accessoryBattery)
+            Divider()
+            ToggleRow(title: "Downloads", detail: "Progress in the notch while a browser downloads to ~/Downloads, and a card when it finishes.",
+                      isOn: $settings.downloadActivity)
+            Divider()
+            ToggleRow(title: "Focus", detail: "Do Not Disturb, Work, Sleep… turning on or off. Needs Full Disk Access to read the Focus state.",
+                      isOn: $settings.focusActivity)
+            if settings.focusActivity, focus?.needsFullDiskAccess == true {
+                Button("Open Full Disk Access settings…") { focus?.openFullDiskAccessSettings() }
+                    .padding(.bottom, 8)
+            }
+            Divider()
+            ToggleRow(title: "Privacy dots", detail: "Green: camera in use. Orange: microphone. Purple: screen recording. Red: your mic is muted.",
+                      isOn: $settings.privacyIndicators)
         }
     }
 }
@@ -419,13 +605,19 @@ private struct TrayPane: View {
             ToggleRow(title: "Copy dropped files into the tray",
                       detail: "Keeps a copy even if the original moves or is deleted. Off: the tray only remembers where files are.",
                       isOn: $settings.copyDroppedFiles)
+            Divider()
+            ToggleRow(title: "Add finished downloads to the tray", isOn: $settings.downloadsToTray)
         }
         Card(title: "Clipboard history") {
             ToggleRow(title: "Keep clipboard history",
-                      detail: "In memory only, cleared when NotchDeck quits. Items marked concealed by password managers are skipped.",
+                      detail: "Items marked concealed by password managers are never recorded.",
                       isOn: $settings.clipboardEnabled)
             Divider()
-            Row(title: "Items to keep") {
+            ToggleRow(title: "Remember across restarts",
+                      detail: "Saves text and file items encrypted (AES-GCM, key in your Keychain). Images are never saved.",
+                      isOn: $settings.clipboardPersist)
+            Divider()
+            Row(title: "Items to keep", detail: "Pinned items don't count and are never removed.") {
                 Stepper("\(settings.clipboardLimit)", value: $settings.clipboardLimit, in: 5...100, step: 5)
                     .frame(width: 110)
             }
@@ -455,6 +647,9 @@ private struct WeatherPane: View {
 }
 
 private struct AboutPane: View {
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var updates: UpdateChecker
+
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 6) {
@@ -472,6 +667,8 @@ private struct AboutPane: View {
             ForEach([("Accessibility", "Privacy_Accessibility", "Replacing the volume and brightness HUD"),
                      ("Automation", "Privacy_Automation", "Spotify, Music and Dark Mode"),
                      ("Calendars", "Privacy_Calendars", "The Calendar tab and event reminders"),
+                     ("Reminders", "Privacy_Reminders", "Desk → To-do and due alerts"),
+                     ("Full Disk Access", "Privacy_AllFiles", "Reading which Focus mode is on"),
                      ("Camera", "Privacy_Camera", "The Mirror tab")], id: \.0) { name, anchor, use in
                 Row(title: name, detail: use) {
                     Button("Open") {
@@ -479,6 +676,23 @@ private struct AboutPane: View {
                     }
                 }
                 if name != "Camera" { Divider() }
+            }
+        }
+        Card(title: "Updates") {
+            Row(title: "GitHub repository", detail: "Where releases are published, e.g. you/notchdeck. NotchDeck checks its latest release.") {
+                TextField("owner/repo", text: $settings.updateRepository)
+                    .textFieldStyle(.roundedBorder).frame(width: 200)
+            }
+            Divider()
+            Row(title: updateText) {
+                switch updates.state {
+                case .available(_, let url):
+                    Button("Download") { NSWorkspace.shared.open(url) }
+                case .checking:
+                    ProgressView().controlSize(.small)
+                default:
+                    Button("Check now") { updates.check(repository: settings.updateRepository) }
+                }
             }
         }
     }

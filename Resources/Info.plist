@@ -13,9 +13,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>0.3.0</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>3</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
@@ -30,6 +30,14 @@
     <string>NotchDeck shows today's and tomorrow's events in the notch and reminds you before they start.</string>
     <key>NSCameraUsageDescription</key>
     <string>The Mirror tab shows your front camera so you can check yourself before a call.</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>The Desk tab shows your open reminders, lets you tick them off and add new ones, and alerts you when one is due.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>The Desk tab shows your open reminders, lets you tick them off and add new ones, and alerts you when one is due.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>NotchDeck shows download progress in the notch and can add finished downloads to the tray.</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>NotchDeck announces Bluetooth devices such as AirPods when they connect.</string>
 </dict>

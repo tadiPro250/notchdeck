@@ -17,12 +17,18 @@ struct ExpandedView: View {
                     TrayView(model: model, tray: services.tray)
                 case .calendar:
                     CalendarTabView(calendar: services.calendar)
+                case .clock:
+                    ClockView(model: model, clock: services.clock, timer: services.timer, settings: settings)
+                case .desk:
+                    DeskView(model: model, services: services, settings: settings)
                 case .clipboard:
                     ClipboardView(history: services.clipboard, settings: settings)
                 case .mirror:
                     MirrorView(camera: services.camera)
                 case .controls:
                     ControlsView(model: model, services: services)
+                case .system:
+                    SystemView(services: services)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -40,7 +46,7 @@ struct ExpandedView: View {
 
     private var header: some View {
         HStack(spacing: 0) {
-            HStack(spacing: 2) {
+            HStack(spacing: 0) {
                 ForEach(settings.visibleTabs) { tab in
                     TabButton(tab: tab, selected: model.tab == tab) { model.tab = tab }
                 }
@@ -69,7 +75,7 @@ private struct TabButton: View {
         Button(action: action) {
             Image(systemName: tab.symbol)
                 .font(.system(size: 11, weight: .semibold))
-                .frame(width: 32, height: 24)
+                .frame(width: 27, height: 24)
                 .background(Capsule().fill(selected ? look.accent.opacity(0.22)
                                                     : Color.white.opacity(hovering.value ? 0.08 : 0)))
                 .foregroundStyle(selected ? look.accent : .white.opacity(0.5))

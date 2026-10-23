@@ -5,14 +5,14 @@ struct ControlsView: View {
     let services: NotchServices
 
     var body: some View {
-        HStack(alignment: .top, spacing: 22) {
-            VStack(alignment: .leading, spacing: 11) {
-                SliderRows(volume: services.volume, brightness: services.brightness)
-                TimerStrip(timer: services.timer)
-                StatsRow(stats: services.stats)
+        HStack(alignment: .top, spacing: 20) {
+            VStack(alignment: .leading, spacing: 9) {
+                SliderRows(volume: services.volume, brightness: services.brightness,
+                           displays: services.displays, keyboard: services.keyboard)
+                AudioRow(audio: services.audio)
             }
             .frame(width: 300)
-            ActionGrid(model: model, actions: services.actions)
+            ActionGrid(model: model, actions: services.actions, audio: services.audio)
         }
     }
 }
@@ -20,12 +20,27 @@ struct ControlsView: View {
 private struct SliderRows: View {
     @ObservedObject var volume: VolumeControl
     @ObservedObject var brightness: BrightnessControl
+    @ObservedObject var displays: ExternalDisplays
+    @ObservedObject var keyboard: KeyboardBacklight
 
     var body: some View {
-        VStack(spacing: 10) {
-            LevelSlider(value: brightness.level, low: "sun.min.fill", high: "sun.max.fill",
-                        enabled: brightness.isAvailable) { brightness.set($0) }
-                .help(brightness.isAvailable ? "Brightness" : "Brightness works on the built-in display only")
+        VStack(spacing: 8) {
+            if brightness.isAvailable || displays.displays.isEmpty {
+                LevelSlider(value: brightness.level, low: "sun.min.fill", high: "sun.max.fill",
+                            enabled: brightness.isAvailable) { brightness.set($0) }
+                    .help("Built-in display")
+            }
+            ForEach(displays.displays) { display in
+                LevelSlider(value: display.brightness, low: "display", high: "sun.max.fill") {
+                    displays.set(display, brightness: $0)
+                }
+                .help(display.name)
+            }
+            if keyboard.isAvailable {
+                LevelSlider(value: keyboard.level, low: "keyboard", high: "keyboard.fill",
+                            onLowTap: { keyboard.toggle() }) { keyboard.set($0) }
+                    .help("Keyboard backlight")
+            }
             LevelSlider(value: volume.isMuted ? 0 : volume.level,
                         low: volume.isMuted ? "speaker.slash.fill" : "speaker.fill",
                         high: "speaker.wave.3.fill",
@@ -34,47 +49,47 @@ private struct SliderRows: View {
     }
 }
 
-private struct TimerStrip: View {
-    @ObservedObject var timer: FocusTimer
+/// Output device picker and microphone mute.
+private struct AudioRow: View {
+    @ObservedObject var audio: AudioDevices
     @Environment(\.look) private var look
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "timer")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(look.accent)
-                .frame(width: 20)
-            if timer.isActive {
-                TimelineView(.periodic(from: .now, by: 0.5)) { context in
-                    Text(FocusTimer.clock(timer.remaining(at: context.date)))
-                        .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+            Menu {
+                ForEach(audio.outputs) { device in
+                    Button {
+                        audio.select(device)
+                    } label: {
+                        Label(device.name, systemImage: device.id == audio.currentOutput ? "checkmark" : device.symbol)
+                    }
                 }
-                Spacer(minLength: 0)
-                Button(timer.isPaused ? "Resume" : "Pause") { timer.togglePause() }
-                    .buttonStyle(PillButtonStyle())
-                Button("Stop") { timer.cancel() }
-                    .buttonStyle(PillButtonStyle())
-            } else {
-                ForEach([5, 15, 25, 50], id: \.self) { minutes in
-                    Button("\(minutes)m") { timer.start(minutes: Double(minutes)) }
-                        .buttonStyle(PillButtonStyle())
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: audio.currentOutputDevice?.symbol ?? "hifispeaker.fill")
+                    Text(audio.currentOutputDevice?.name ?? "Output")
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .bold))
                 }
-                Spacer(minLength: 0)
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 10)
+                .frame(height: 26)
+                .background(Capsule().fill(look.theme.surface))
+                .contentShape(Capsule())
             }
-        }
-        .frame(height: 26)
-    }
-}
-
-struct StatsRow: View {
-    @ObservedObject var stats: SystemStats
-
-    var body: some View {
-        HStack(spacing: 6) {
-            StatGauge(label: "CPU", value: stats.cpu, detail: "\(ProcessInfo.processInfo.activeProcessorCount) cores")
-            StatGauge(label: "GPU", value: stats.gpu, detail: stats.gpuCores.map { "\($0) cores" } ?? "GPU")
-            StatGauge(label: "RAM", value: stats.memory, detail: String(format: "%.1f GB", stats.memoryUsedGB))
-            StatGauge(label: "Disk", value: stats.disk, detail: String(format: "%.0f GB free", stats.diskFreeGB))
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("Sound output")
+            Button { audio.toggleMicMute() } label: {
+                Image(systemName: audio.micMuted ? "mic.slash.fill" : "mic.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 34, height: 26)
+                    .background(Capsule().fill(audio.micMuted ? Color.red.opacity(0.85) : look.theme.surface))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help(audio.micMuted ? "Unmute \(audio.micName)" : "Mute \(audio.micName)")
         }
     }
 }
@@ -131,9 +146,10 @@ struct StatsGlance: View {
 private struct ActionGrid: View {
     let model: NotchModel
     @ObservedObject var actions: QuickActions
+    @ObservedObject var audio: AudioDevices
 
     var body: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
             ActionTile(symbol: "cup.and.saucer.fill", title: "Keep Awake", on: actions.keepAwake) {
                 actions.toggleKeepAwake()
             }
@@ -143,6 +159,9 @@ private struct ActionGrid: View {
             ActionTile(symbol: "eye.slash.fill", title: "Hide Desktop", on: actions.desktopHidden) {
                 actions.toggleDesktopIcons()
             }
+            ActionTile(symbol: audio.micMuted ? "mic.slash.fill" : "mic.fill", title: "Mic Mute", on: audio.micMuted) {
+                audio.toggleMicMute()
+            }
             ActionTile(symbol: "camera.viewfinder", title: "Screenshot", on: false) {
                 model.requestCollapse()
                 actions.screenshot()
@@ -150,6 +169,10 @@ private struct ActionGrid: View {
             ActionTile(symbol: "moon.zzz.fill", title: "Display Off", on: false) {
                 model.requestCollapse()
                 actions.sleepDisplay()
+            }
+            ActionTile(symbol: "powersleep", title: "Sleep", on: false) {
+                model.requestCollapse()
+                actions.sleepMac()
             }
             ActionTile(symbol: "lock.fill", title: "Lock", on: false) {
                 model.requestCollapse()
@@ -224,7 +247,7 @@ struct ActionTile: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 70)
+            .frame(height: 68)
             .foregroundStyle(on ? Color.black : Color.white)
             .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(on ? AnyShapeStyle(look.accent) : AnyShapeStyle(hovering.value ? Color.white.opacity(0.15) : look.theme.surface)))

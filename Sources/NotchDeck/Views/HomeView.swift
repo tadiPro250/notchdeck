@@ -7,7 +7,7 @@ struct HomeView: View {
 
     var body: some View {
         HStack(spacing: 18) {
-            NowPlayingCard(player: services.player)
+            NowPlayingCard(player: services.player, lyrics: services.lyrics)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Rectangle()
                 .fill(Color.white.opacity(0.08))
@@ -191,6 +191,7 @@ enum EventTime {
 
 struct NowPlayingCard: View {
     @ObservedObject var player: NowPlaying
+    @ObservedObject var lyrics: LyricsService
     @Environment(\.look) private var look
 
     var body: some View {
@@ -213,9 +214,29 @@ struct NowPlayingCard: View {
                         .font(.system(size: 12))
                         .foregroundStyle(look.theme.secondaryText)
                         .lineLimit(1)
-                    Text(track.player.rawValue.uppercased())
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(look.accent.opacity(0.8))
+                    if lyrics.lines.isEmpty {
+                        Text(track.appName.uppercased())
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(look.accent.opacity(0.8))
+                    } else {
+                        TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                            let line = lyrics.current(at: track.position(at: context.date))
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(line.now ?? "♪")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(look.accent)
+                                    .lineLimit(1)
+                                    .id(line.now)
+                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                                Text(line.next ?? " ")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.white.opacity(0.35))
+                                    .lineLimit(1)
+                            }
+                            .animation(.easeOut(duration: 0.25), value: line.now)
+                        }
+                        .padding(.top, 2)
+                    }
                     Spacer(minLength: 4)
                     TimelineView(.periodic(from: .now, by: 0.5)) { context in
                         Scrubber(position: track.position(at: context.date), duration: track.duration,

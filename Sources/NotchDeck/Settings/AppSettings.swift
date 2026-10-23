@@ -63,6 +63,46 @@ enum GlanceWidget: String, CaseIterable, Identifiable {
     }
 }
 
+enum HotKeyChoice: String, CaseIterable, Identifiable {
+    case optionSpace, controlOptionSpace, commandShiftSpace, controlOptionN, off
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .optionSpace: "⌥ Space"
+        case .controlOptionSpace: "⌃⌥ Space"
+        case .commandShiftSpace: "⇧⌘ Space"
+        case .controlOptionN: "⌃⌥ N"
+        case .off: "Off"
+        }
+    }
+
+    /// Carbon key code and modifier mask.
+    var carbon: (UInt32, UInt32)? {
+        let space: UInt32 = 49, n: UInt32 = 45
+        let cmd: UInt32 = 1 << 8, shift: UInt32 = 1 << 9, option: UInt32 = 1 << 11, control: UInt32 = 1 << 12
+        switch self {
+        case .optionSpace: return (space, option)
+        case .controlOptionSpace: return (space, control | option)
+        case .commandShiftSpace: return (space, cmd | shift)
+        case .controlOptionN: return (n, control | option)
+        case .off: return nil
+        }
+    }
+}
+
+enum DisplayMode: String, CaseIterable, Identifiable {
+    case notched, main, all
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .notched: "The built-in display"
+        case .main: "The main display"
+        case .all: "Every display"
+        }
+    }
+}
+
 /// Every user preference, persisted in UserDefaults. Views observe this directly.
 final class AppSettings: ObservableObject {
     static let shared = AppSettings()
@@ -75,6 +115,13 @@ final class AppSettings: ObservableObject {
     @Published var haptics: Bool { didSet { save(haptics, "haptics") } }
     @Published var swipeBetweenTabs: Bool { didSet { save(swipeBetweenTabs, "swipeBetweenTabs") } }
     @Published var enabledTabs: [NotchTab] { didSet { save(enabledTabs.map(\.rawValue), "enabledTabs") } }
+    @Published var hotKey: HotKeyChoice { didSet { save(hotKey.rawValue, "hotKey") } }
+    @Published var onboarded: Bool { didSet { save(onboarded, "onboarded") } }
+
+    // Displays
+    @Published var displayMode: DisplayMode { didSet { save(displayMode.rawValue, "displayMode") } }
+    @Published var islandOnPlainDisplays: Bool { didSet { save(islandOnPlainDisplays, "islandOnPlainDisplays") } }
+    @Published var lockScreenWidget: Bool { didSet { save(lockScreenWidget, "lockScreenWidget") } }
 
     // Appearance
     @Published var themeID: String { didSet { save(themeID, "themeID") } }
@@ -87,6 +134,7 @@ final class AppSettings: ObservableObject {
     // Media
     @Published var visualizer: VisualizerStyle { didSet { save(visualizer.rawValue, "visualizer") } }
     @Published var showLiveActivity: Bool { didSet { save(showLiveActivity, "showLiveActivity") } }
+    @Published var showLyrics: Bool { didSet { save(showLyrics, "showLyrics") } }
 
     // HUD
     @Published var replaceSystemHUD: Bool { didSet { save(replaceSystemHUD, "replaceSystemHUD") } }
@@ -97,11 +145,30 @@ final class AppSettings: ObservableObject {
     @Published var chargingActivity: Bool { didSet { save(chargingActivity, "chargingActivity") } }
     @Published var bluetoothActivity: Bool { didSet { save(bluetoothActivity, "bluetoothActivity") } }
     @Published var calendarActivity: Bool { didSet { save(calendarActivity, "calendarActivity") } }
+    @Published var calendarCountdown: Bool { didSet { save(calendarCountdown, "calendarCountdown") } }
+    @Published var reminderActivity: Bool { didSet { save(reminderActivity, "reminderActivity") } }
+    @Published var downloadActivity: Bool { didSet { save(downloadActivity, "downloadActivity") } }
+    @Published var focusActivity: Bool { didSet { save(focusActivity, "focusActivity") } }
+    @Published var privacyIndicators: Bool { didSet { save(privacyIndicators, "privacyIndicators") } }
+    @Published var accessoryBattery: Bool { didSet { save(accessoryBattery, "accessoryBattery") } }
+
+    // Clock
+    @Published var alarmSound: String { didSet { save(alarmSound, "alarmSound") } }
+    @Published var snoozeMinutes: Int { didSet { save(snoozeMinutes, "snoozeMinutes") } }
+
+    // Desk
+    @Published var scriptCommand: String { didSet { save(scriptCommand, "scriptCommand") } }
+    @Published var scriptInterval: Int { didSet { save(scriptInterval, "scriptInterval") } }
+
+    // Updates
+    @Published var updateRepository: String { didSet { save(updateRepository, "updateRepository") } }
 
     // Tray and clipboard
     @Published var copyDroppedFiles: Bool { didSet { save(copyDroppedFiles, "copyDroppedFiles") } }
     @Published var clipboardEnabled: Bool { didSet { save(clipboardEnabled, "clipboardEnabled") } }
     @Published var clipboardLimit: Int { didSet { save(clipboardLimit, "clipboardLimit") } }
+    @Published var clipboardPersist: Bool { didSet { save(clipboardPersist, "clipboardPersist") } }
+    @Published var downloadsToTray: Bool { didSet { save(downloadsToTray, "downloadsToTray") } }
 
     // Weather
     @Published var weatherCity: String { didSet { save(weatherCity, "weatherCity") } }
@@ -120,8 +187,24 @@ final class AppSettings: ObservableObject {
         hoverDelay = value("hoverDelay", 0.12)
         haptics = value("haptics", true)
         swipeBetweenTabs = value("swipeBetweenTabs", true)
-        let tabs = (d.stringArray(forKey: "enabledTabs") ?? []).compactMap(NotchTab.init(rawValue:))
-        enabledTabs = tabs.isEmpty ? NotchTab.allCases : tabs
+        // Tabs added in a later version start switched on.
+        let known = Set(d.stringArray(forKey: "knownTabs") ?? (d.stringArray(forKey: "enabledTabs") == nil ? [] :
+            ["home", "tray", "calendar", "clipboard", "mirror", "controls"]))
+        if let stored = d.stringArray(forKey: "enabledTabs") {
+            let saved = stored.compactMap(NotchTab.init(rawValue:))
+            let added = NotchTab.allCases.filter { !known.contains($0.rawValue) && !saved.contains($0) }
+            enabledTabs = saved.contains(.home) ? saved + added : [.home] + saved + added
+        } else {
+            // Never customised: everything on.
+            enabledTabs = NotchTab.allCases
+        }
+        d.set(NotchTab.allCases.map(\.rawValue), forKey: "knownTabs")
+        hotKey = choice("hotKey", .optionSpace)
+        onboarded = value("onboarded", false)
+
+        displayMode = choice("displayMode", .notched)
+        islandOnPlainDisplays = value("islandOnPlainDisplays", true)
+        lockScreenWidget = value("lockScreenWidget", true)
 
         themeID = value("themeID", Theme.midnight.id)
         accentSource = choice("accentSource", .artwork)
@@ -132,6 +215,7 @@ final class AppSettings: ObservableObject {
 
         visualizer = choice("visualizer", .bars)
         showLiveActivity = value("showLiveActivity", true)
+        showLyrics = value("showLyrics", true)
 
         replaceSystemHUD = value("replaceSystemHUD", true)
         hudStyle = choice("hudStyle", .wings)
@@ -140,13 +224,35 @@ final class AppSettings: ObservableObject {
         chargingActivity = value("chargingActivity", true)
         bluetoothActivity = value("bluetoothActivity", true)
         calendarActivity = value("calendarActivity", true)
+        calendarCountdown = value("calendarCountdown", true)
+        reminderActivity = value("reminderActivity", true)
+        downloadActivity = value("downloadActivity", true)
+        focusActivity = value("focusActivity", true)
+        privacyIndicators = value("privacyIndicators", true)
+        accessoryBattery = value("accessoryBattery", true)
+
+        alarmSound = value("alarmSound", "Hero")
+        snoozeMinutes = value("snoozeMinutes", 9)
+
+        scriptCommand = value("scriptCommand", "uptime")
+        scriptInterval = value("scriptInterval", 30)
+
+        updateRepository = value("updateRepository", "")
 
         copyDroppedFiles = value("copyDroppedFiles", false)
         clipboardEnabled = value("clipboardEnabled", true)
         clipboardLimit = value("clipboardLimit", 25)
+        clipboardPersist = value("clipboardPersist", false)
+        downloadsToTray = value("downloadsToTray", true)
 
         weatherCity = value("weatherCity", "")
         temperatureUnit = choice("temperatureUnit", .celsius)
+    }
+
+    /// Alert sounds installed with macOS, for the alarm picker.
+    static var systemSounds: [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: "/System/Library/Sounds")) ?? []
+        return names.map { ($0 as NSString).deletingPathExtension }.sorted()
     }
 
     var theme: Theme { Theme.all.first { $0.id == themeID } ?? .midnight }

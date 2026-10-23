@@ -125,10 +125,12 @@ struct ClipboardView: View {
             HStack(spacing: 12) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(history.items) { item in
-                            ClipCard(item: item, copied: history.lastCopiedID == item.id) { history.copy(item) }
+                        ForEach(history.sortedItems) { item in
+                            ClipCard(item: item, copied: history.lastCopiedID == item.id,
+                                     onPin: { history.togglePin(item) }) { history.copy(item) }
                                 .contextMenu {
                                     Button("Copy") { history.copy(item) }
+                                    Button(item.pinned ? "Unpin" : "Pin") { history.togglePin(item) }
                                     Button("Remove") { history.remove(item) }
                                 }
                         }
@@ -143,6 +145,13 @@ struct ClipboardView: View {
                         .foregroundStyle(look.theme.secondaryText)
                     Button { history.clear() } label: { Label("Clear", systemImage: "trash") }
                         .buttonStyle(PillButtonStyle())
+                        .help("Clears everything except pinned items")
+                    if settings.clipboardPersist {
+                        Label("Saved", systemImage: "lock.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(look.theme.secondaryText)
+                            .help("History is kept, encrypted, across restarts")
+                    }
                 }
                 .frame(width: 80)
             }
@@ -162,6 +171,7 @@ struct ClipboardView: View {
 private struct ClipCard: View {
     let item: ClipboardHistory.Item
     let copied: Bool
+    let onPin: () -> Void
     let action: () -> Void
     @StateObject private var hovering = ViewState<Bool>(false)
     @Environment(\.look) private var look
@@ -189,6 +199,21 @@ private struct ClipCard: View {
             .contentShape(RoundedRectangle(cornerRadius: 14))
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            if item.pinned || hovering.value {
+                Button(action: onPin) {
+                    Image(systemName: item.pinned ? "pin.fill" : "pin")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(item.pinned ? look.accent : .white.opacity(0.6))
+                        .rotationEffect(.degrees(45))
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.black.opacity(0.4)))
+                }
+                .buttonStyle(.plain)
+                .padding(5)
+                .help(item.pinned ? "Unpin" : "Pin to keep it at the front")
+            }
+        }
         .onHover { hovering.value = $0 }
         .animation(.easeOut(duration: 0.15), value: copied)
     }

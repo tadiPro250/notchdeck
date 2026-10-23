@@ -130,6 +130,10 @@ final class QuickActions: ObservableObject {
         queue.async { Self.shell("/usr/bin/pmset", ["displaysleepnow"]) }
     }
 
+    func sleepMac() {
+        queue.async { Self.shell("/usr/bin/pmset", ["sleepnow"]) }
+    }
+
     func lockScreen() {
         typealias Lock = @convention(c) () -> Int32
         if let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/Versions/Current/login", RTLD_LAZY),

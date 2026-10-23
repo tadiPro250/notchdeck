@@ -6,6 +6,7 @@ import ApplicationServices
 final class MediaKeyInterceptor {
     enum Key {
         case volumeUp, volumeDown, mute, brightnessUp, brightnessDown
+        case keyboardUp, keyboardDown, keyboardToggle
     }
 
     /// Return true when the key was handled; the event is then swallowed. Return false to let
@@ -87,6 +88,9 @@ final class MediaKeyInterceptor {
         case 7: key = .mute
         case 2: key = .brightnessUp
         case 3: key = .brightnessDown
+        case 21: key = .keyboardUp
+        case 22: key = .keyboardDown
+        case 23: key = .keyboardToggle
         default: return Unmanaged.passUnretained(event)
         }
 

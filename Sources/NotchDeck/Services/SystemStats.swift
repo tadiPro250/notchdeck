@@ -11,9 +11,17 @@ final class SystemStats: ObservableObject {
     @Published private(set) var memory: Double = 0
     @Published private(set) var memoryUsedGB: Double = 0
     @Published private(set) var disk: Double = 0
+    @Published private(set) var downloadRate: Double = 0
+    @Published private(set) var uploadRate: Double = 0
+    @Published private(set) var batteryHealth: Double?
+    @Published private(set) var batteryCycles: Int?
+    @Published private(set) var batteryTemperature: Double?
+    @Published private(set) var batteryDesignMAh: Int?
+    @Published private(set) var batteryMaxMAh: Int?
     @Published private(set) var diskFreeGB: Double = 0
 
     private var previousTicks: (busy: UInt64, total: UInt64)?
+    private var previousNetwork: (received: UInt64, sent: UInt64, at: Date)?
     private var timer: Timer?
 
     init(live: Bool = true) {
@@ -22,6 +30,14 @@ final class SystemStats: ObservableObject {
         // CPU usage is a difference between two samples, so take the second one quickly.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.sample() }
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.sample() }
+    }
+
+    func showPreview(network: (down: Double, up: Double), battery: (health: Double, cycles: Int, temperature: Double)) {
+        downloadRate = network.down
+        uploadRate = network.up
+        batteryHealth = battery.health
+        batteryCycles = battery.cycles
+        batteryTemperature = battery.temperature
     }
 
     func showPreview(cpu: Double, gpu: Double, gpuCores: Int, memory: Double, memoryUsedGB: Double, disk: Double, diskFreeGB: Double) {
@@ -39,6 +55,60 @@ final class SystemStats: ObservableObject {
         sampleGPU()
         sampleMemory()
         sampleDisk()
+        sampleNetwork()
+        sampleBattery()
+    }
+
+    /// Bytes per second across all non-loopback interfaces.
+    private func sampleNetwork() {
+        var pointer: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&pointer) == 0, let first = pointer else { return }
+        defer { freeifaddrs(pointer) }
+        var received: UInt64 = 0, sent: UInt64 = 0
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let entry = cursor {
+            defer { cursor = entry.pointee.ifa_next }
+            guard let address = entry.pointee.ifa_addr, address.pointee.sa_family == UInt8(AF_LINK),
+                  (Int32(entry.pointee.ifa_flags) & IFF_LOOPBACK) == 0,
+                  let data = entry.pointee.ifa_data?.assumingMemoryBound(to: if_data.self) else { continue }
+            received += UInt64(data.pointee.ifi_ibytes)
+            sent += UInt64(data.pointee.ifi_obytes)
+        }
+        let now = Date()
+        if let previous = previousNetwork {
+            let seconds = max(now.timeIntervalSince(previous.at), 0.5)
+            // The 32-bit counters wrap; ignore that sample rather than show nonsense.
+            if received >= previous.received, sent >= previous.sent {
+                downloadRate = Double(received - previous.received) / seconds
+                uploadRate = Double(sent - previous.sent) / seconds
+            }
+        }
+        previousNetwork = (received, sent, now)
+    }
+
+    /// Health, cycle count and temperature from the battery controller.
+    private func sampleBattery() {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+        guard service != 0 else { return }
+        defer { IOObjectRelease(service) }
+        // Newer Macs keep the raw figures inside a nested BatteryData dictionary.
+        let nested = IORegistryEntryCreateCFProperty(service, "BatteryData" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? [String: Any]
+        func value(_ key: String) -> Int? {
+            (IORegistryEntryCreateCFProperty(service, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int)
+                ?? (nested?[key] as? Int)
+        }
+        let design = value("DesignCapacity")
+        let maximum = value("AppleRawMaxCapacity") ?? value("NominalChargeCapacity")
+        batteryDesignMAh = design
+        batteryMaxMAh = maximum
+        if let design, let maximum, design > 0 { batteryHealth = min(Double(maximum) / Double(design), 1) }
+        batteryCycles = value("CycleCount")
+        if let temperature = value("Temperature") { batteryTemperature = Double(temperature) / 100 }
+    }
+
+    static func rateText(_ bytesPerSecond: Double) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytesPerSecond), countStyle: .binary) + "/s"
     }
 
     private func sampleCPU() {
