@@ -51,6 +51,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
+        let hud = NSMenuItem(title: "Replace macOS Volume & Brightness HUD", action: #selector(toggleSystemHUD), keyEquivalent: "")
+        hud.target = self
+        hud.state = controller?.replacesSystemHUD == true ? .on : .off
+        menu.addItem(hud)
+        if controller?.replacesSystemHUD == true, !MediaKeyInterceptor.isTrusted {
+            let hint = NSMenuItem(title: "Allow NotchDeck in Accessibility…", action: #selector(openAccessibility), keyEquivalent: "")
+            hint.target = self
+            menu.addItem(hint)
+        }
+
         let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -63,6 +73,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openTab(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let tab = NotchTab(rawValue: raw) else { return }
         controller?.expand(tab: tab, sticky: true)
+    }
+
+    @objc private func toggleSystemHUD() {
+        guard let controller else { return }
+        controller.replacesSystemHUD.toggle()
+    }
+
+    @objc private func openAccessibility() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+        NSWorkspace.shared.open(url)
     }
 
     @objc private func toggleLaunchAtLogin() {

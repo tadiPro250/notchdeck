@@ -26,6 +26,16 @@ final class NotchController {
     let brightness = BrightnessControl()
     let system = SystemStatus()
     let actions = QuickActions()
+    let mediaKeys = MediaKeyInterceptor()
+
+    static let replaceHUDKey = "replaceSystemHUD"
+    var replacesSystemHUD: Bool {
+        get { UserDefaults.standard.object(forKey: Self.replaceHUDKey) as? Bool ?? true }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.replaceHUDKey)
+            newValue ? mediaKeys.start(prompt: true) : mediaKeys.stop()
+        }
+    }
 
     private let panel: NotchPanel
     private var monitors: [Any] = []
@@ -86,6 +96,49 @@ final class NotchController {
         }
 
         installMonitors()
+
+        mediaKeys.handler = { [weak self] key, fine in self?.handleMediaKey(key, fineStep: fine) ?? false }
+        if replacesSystemHUD { mediaKeys.start(prompt: true) }
+    }
+
+    // MARK: Volume and brightness keys
+
+    /// Does what the key would have done, then shows the notch HUD instead of the system one.
+    private func handleMediaKey(_ key: MediaKeyInterceptor.Key, fineStep: Bool) -> Bool {
+        let step = fineStep ? 1.0 / 64 : 1.0 / 16
+        func stepped(_ value: Double, by delta: Double) -> Double {
+            min(max(((value / step).rounded() + delta) * step, 0), 1)
+        }
+        switch key {
+        case .volumeUp, .volumeDown, .mute:
+            guard volume.canSetVolume else { return false }
+            switch key {
+            case .volumeUp: volume.set(stepped(volume.isMuted ? 0 : volume.level, by: 1))
+            case .volumeDown: volume.set(stepped(volume.level, by: -1))
+            default: volume.setMuted(!volume.isMuted)
+            }
+            if key != .mute { playVolumeFeedback() }
+            model.flashHUD(HUDState(kind: .volume(muted: volume.isMuted), level: volume.isMuted ? 0 : volume.level))
+        case .brightnessUp, .brightnessDown:
+            guard brightness.isAvailable else { return false }
+            brightness.set(stepped(brightness.level, by: key == .brightnessUp ? 1 : -1))
+            model.flashHUD(HUDState(kind: .brightness, level: brightness.level))
+        }
+        return true
+    }
+
+    private lazy var feedbackSound = NSSound(
+        contentsOfFile: "/System/Library/LoginPlugins/BezelServices.loginPlugin/Contents/Resources/volume.aiff",
+        byReference: true)
+
+    /// The "pop" macOS plays on a volume change, when "Play feedback when volume is changed" is on.
+    private func playVolumeFeedback() {
+        CFPreferencesAppSynchronize(kCFPreferencesAnyApplication)
+        let enabled = CFPreferencesCopyAppValue("com.apple.sound.beep.feedback" as CFString,
+                                                kCFPreferencesAnyApplication) as? Int ?? 0
+        guard enabled == 1, !volume.isMuted, let sound = feedbackSound else { return }
+        sound.stop()
+        sound.play()
     }
 
     // MARK: Opening and closing

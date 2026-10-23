@@ -39,7 +39,16 @@ The menu bar icon (a laptop) opens any tab, toggles Launch at Login (works once 
 
 - **Automation** (asked on first use): to read and control Spotify/Music and to toggle Dark Mode
   through System Events. If you rebuild, macOS may ask again because the ad-hoc signature changes.
-- Nothing else: mouse tracking uses global mouse monitors, which need no Accessibility access.
+- **Accessibility**: to replace the macOS volume and brightness HUD. NotchDeck catches those keys
+  before macOS does, changes the level itself, and shows only the notch HUD. Without the permission
+  (or with "Replace macOS Volume & Brightness HUD" unticked in the menu) the keys behave normally and
+  both HUDs show. Option+key still opens Sound/Displays settings; Shift+Option+key steps by quarters.
+  Outputs whose volume macOS can't set, and external displays, fall back to the system HUD.
+- Mouse tracking uses global mouse monitors, which need no permission.
+
+Run `scripts/make-signing-identity.sh` once: it creates a self-signed "NotchDeck Local" identity, and
+the build script then signs with it, so permissions survive rebuilds (ad-hoc signatures change on
+every build and macOS forgets the grants).
 
 ## How it works
 
@@ -52,6 +61,7 @@ The menu bar icon (a laptop) opens any tab, toggles Launch at Login (works once 
 | Volume | CoreAudio virtual main volume and mute on the default output device, with listeners |
 | Brightness | private `DisplayServices` (built-in display only; external monitors need DDC) |
 | Keep Awake | an `IOPMAssertion` that prevents display sleep |
+| System HUD | a `CGEventTap` on `NX_SYSDEFINED` media keys; handled keys are swallowed |
 | Lock | private `SACLockScreenImmediate`, falling back to `pmset displaysleepnow` |
 
 `@State` is not used: on the macOS 27 SDK it is a macro whose plugin ships only with Xcode, so

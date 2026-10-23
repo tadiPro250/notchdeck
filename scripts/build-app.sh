@@ -9,8 +9,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$(swift build -c release --show-bin-path)/NotchDeck" "$APP/Contents/MacOS/NotchDeck"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
-# Ad-hoc signature: enough to run locally and to keep the Automation permission between launches.
-codesign --force --sign - "$APP"
+# Sign with the stable local identity when it exists (scripts/make-signing-identity.sh), so
+# Accessibility and Automation grants survive rebuilds. Ad-hoc signing works but loses them.
+IDENTITY=$(security find-identity -p codesigning 2>/dev/null | awk '/"NotchDeck Local"/ {print $2; exit}')
+codesign --force --sign "${IDENTITY:--}" "$APP"
+[[ -z "$IDENTITY" ]] && echo "Note: ad-hoc signed; run scripts/make-signing-identity.sh to keep permissions across rebuilds"
 echo "Built $APP"
 
 if [[ "${1:-}" == "--install" ]]; then

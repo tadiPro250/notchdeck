@@ -38,6 +38,12 @@ final class VolumeControl: ObservableObject {
         attach()
     }
 
+    /// False for outputs macOS can't set a volume on (e.g. some HDMI and USB devices).
+    var canSetVolume: Bool {
+        var settable: DarwinBoolean = false
+        return AudioObjectIsPropertySettable(device, &volumeAddress, &settable) == noErr && settable.boolValue
+    }
+
     func set(_ value: Double) {
         lastWrite = Date()
         var volume = Float32(min(max(value, 0), 1))
