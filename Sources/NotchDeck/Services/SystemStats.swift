@@ -1,9 +1,13 @@
 import Darwin
 import Foundation
+import IOKit
 
-/// CPU, memory and disk usage, sampled every few seconds.
+/// CPU, GPU, memory and disk usage, sampled every few seconds.
 final class SystemStats: ObservableObject {
     @Published private(set) var cpu: Double = 0
+    @Published private(set) var gpu: Double = 0
+    @Published private(set) var gpuMemoryGB: Double = 0
+    @Published private(set) var gpuCores: Int?
     @Published private(set) var memory: Double = 0
     @Published private(set) var memoryUsedGB: Double = 0
     @Published private(set) var disk: Double = 0
@@ -20,8 +24,10 @@ final class SystemStats: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.sample() }
     }
 
-    func showPreview(cpu: Double, memory: Double, memoryUsedGB: Double, disk: Double, diskFreeGB: Double) {
+    func showPreview(cpu: Double, gpu: Double, gpuCores: Int, memory: Double, memoryUsedGB: Double, disk: Double, diskFreeGB: Double) {
         self.cpu = cpu
+        self.gpu = gpu
+        self.gpuCores = gpuCores
         self.memory = memory
         self.memoryUsedGB = memoryUsedGB
         self.disk = disk
@@ -30,6 +36,7 @@ final class SystemStats: ObservableObject {
 
     private func sample() {
         sampleCPU()
+        sampleGPU()
         sampleMemory()
         sampleDisk()
     }
@@ -51,6 +58,29 @@ final class SystemStats: ObservableObject {
             cpu = Double(busy - previous.busy) / Double(total - previous.total)
         }
         previousTicks = (busy, total)
+    }
+
+    /// Apple silicon's GPU driver publishes live utilisation on its IOAccelerator service;
+    /// reading it needs no special privileges.
+    private func sampleGPU() {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &iterator)
+                == KERN_SUCCESS else { return }
+        defer { IOObjectRelease(iterator) }
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            defer { IOObjectRelease(service) }
+            guard let stats = IORegistryEntryCreateCFProperty(service, "PerformanceStatistics" as CFString,
+                                                              kCFAllocatorDefault, 0)?
+                    .takeRetainedValue() as? [String: Any],
+                  let utilization = stats["Device Utilization %"] as? Int else { continue }
+            gpu = Double(utilization) / 100
+            gpuMemoryGB = Double(stats["In use system memory"] as? Int ?? 0) / 1_073_741_824
+            if gpuCores == nil {
+                gpuCores = IORegistryEntryCreateCFProperty(service, "gpu-core-count" as CFString,
+                                                           kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int
+            }
+            return
+        }
     }
 
     private func sampleMemory() {

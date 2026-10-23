@@ -120,7 +120,7 @@ enum Previews {
                                .file(URL(fileURLWithPath: "/System/Applications/Notes.app")),
                                .image(sampleArtwork())])
         let stats = SystemStats(live: false)
-        stats.showPreview(cpu: 0.23, memory: 0.68, memoryUsedGB: 10.9, disk: 0.71, diskFreeGB: 142)
+        stats.showPreview(cpu: 0.23, gpu: 0.41, gpuCores: 10, memory: 0.68, memoryUsedGB: 10.9, disk: 0.71, diskFreeGB: 142)
         return NotchServices(settings: settings, player: player, tray: tray, volume: VolumeControl(),
                              brightness: BrightnessControl(), system: system, actions: QuickActions(),
                              calendar: calendar, weather: weather, clipboard: clipboard, stats: stats,

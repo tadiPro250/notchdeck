@@ -11,7 +11,7 @@ struct ControlsView: View {
                 TimerStrip(timer: services.timer)
                 StatsRow(stats: services.stats)
             }
-            .frame(width: 270)
+            .frame(width: 300)
             ActionGrid(model: model, actions: services.actions)
         }
     }
@@ -70,8 +70,9 @@ struct StatsRow: View {
     @ObservedObject var stats: SystemStats
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             StatGauge(label: "CPU", value: stats.cpu, detail: "\(ProcessInfo.processInfo.activeProcessorCount) cores")
+            StatGauge(label: "GPU", value: stats.gpu, detail: stats.gpuCores.map { "\($0) cores" } ?? "GPU")
             StatGauge(label: "RAM", value: stats.memory, detail: String(format: "%.1f GB", stats.memoryUsedGB))
             StatGauge(label: "Disk", value: stats.disk, detail: String(format: "%.0f GB free", stats.diskFreeGB))
         }
@@ -107,18 +108,22 @@ struct StatGauge: View {
     }
 }
 
-/// The system stats widget for the Home tab.
+/// The system stats widget for the Home tab: a 2×2 grid of gauges.
 struct StatsGlance: View {
     @ObservedObject var stats: SystemStats
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Text("SYSTEM")
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(.white.opacity(0.5))
-            StatGauge(label: "CPU", value: stats.cpu, detail: "\(Int(stats.cpu * 100))% in use")
-            StatGauge(label: "Memory", value: stats.memory, detail: String(format: "%.1f GB used", stats.memoryUsedGB))
-            StatGauge(label: "Disk", value: stats.disk, detail: String(format: "%.0f GB free", stats.diskFreeGB))
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+                StatGauge(label: "CPU", value: stats.cpu, detail: "\(ProcessInfo.processInfo.activeProcessorCount) cores")
+                StatGauge(label: "GPU", value: stats.gpu, detail: stats.gpuCores.map { "\($0) cores" } ?? "GPU")
+                StatGauge(label: "RAM", value: stats.memory, detail: String(format: "%.1f GB", stats.memoryUsedGB))
+                StatGauge(label: "Disk", value: stats.disk, detail: String(format: "%.0f GB free", stats.diskFreeGB))
+            }
+            Spacer(minLength: 0)
         }
     }
 }

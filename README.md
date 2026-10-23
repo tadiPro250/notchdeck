@@ -12,7 +12,7 @@ and Atoll. Hover (or click) the notch and it opens into a themed panel; move awa
 | **Calendar** | Today's and tomorrow's events from every calendar in Calendar.app, colour-coded |
 | **Clipboard** | Your recent copies (text, images, files); click to copy again. In memory only, skips password-manager items |
 | **Mirror** | The front camera, for a check before calls; off the moment you leave the tab |
-| **Controls** | Brightness and volume, a focus timer, CPU/RAM/disk, Keep Awake, Dark Mode, Hide Desktop, Screenshot, Display Off, Lock |
+| **Controls** | Brightness and volume, a focus timer, CPU/GPU/RAM/disk, Keep Awake, Dark Mode, Hide Desktop, Screenshot, Display Off, Lock |
 
 Each tab except Home can be switched off in Settings → Modules. Two-finger swipe moves between tabs.
 
@@ -83,7 +83,7 @@ Weather uses Open-Meteo (no account); only the city name you type leaves the Mac
 | System HUD | a `CGEventTap` on `NX_SYSDEFINED` media keys; handled keys are swallowed |
 | Charging | `IOPSNotificationCreateRunLoopSource` |
 | Bluetooth | `IOBluetoothDevice` connect/disconnect notifications |
-| Calendar | EventKit; Weather: Open-Meteo; Stats: `host_statistics`; Mirror: AVFoundation |
+| Calendar | EventKit; Weather: Open-Meteo; Stats: `host_statistics` (CPU, RAM) and the IOAccelerator `PerformanceStatistics` (GPU); Mirror: AVFoundation |
 
 `@State` is not used: on the macOS 27 SDK it is a macro whose plugin ships only with Xcode, so
 view-local state lives in a small `ViewState` box (`Sources/NotchDeck/Views/ViewState.swift`).
