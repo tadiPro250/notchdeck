@@ -1,0 +1,20 @@
+// swift-tools-version:5.9
+import PackageDescription
+
+let package = Package(
+    name: "NotchDeck",
+    platforms: [.macOS(.v14)],
+    targets: [
+        .executableTarget(
+            name: "NotchDeck",
+            path: "Sources/NotchDeck",
+            linkerSettings: [
+                .linkedFramework("IOKit"),
+                .linkedFramework("CoreAudio"),
+                .linkedFramework("AudioToolbox"),
+                .linkedFramework("ServiceManagement"),
+                .linkedFramework("QuickLookThumbnailing"),
+            ]
+        ),
+    ]
+)
