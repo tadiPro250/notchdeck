@@ -40,13 +40,14 @@ struct NotchGeometry: Equatable {
 }
 
 enum NotchTab: String, CaseIterable, Identifiable {
-    case home, tray, calendar, clock, desk, clipboard, mirror, controls, system
+    case home, widgets, tray, calendar, clock, desk, clipboard, mirror, controls, system
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .home: "Home"
+        case .widgets: "Widgets"
         case .tray: "Tray"
         case .calendar: "Calendar"
         case .clock: "Clock"
@@ -61,6 +62,7 @@ enum NotchTab: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .home: "house.fill"
+        case .widgets: "square.grid.2x2.fill"
         case .tray: "tray.full.fill"
         case .calendar: "calendar"
         case .clock: "alarm.fill"
@@ -137,7 +139,9 @@ enum Presentation: Equatable {
 }
 
 final class NotchModel: ObservableObject {
-    static let expandedContentSize = CGSize(width: 720, height: 240)
+    /// The open panel without the quick-launch row; the row adds `dockHeight`.
+    static let expandedContentSize = CGSize(width: 740, height: 262)
+    static let dockHeight: CGFloat = 42
 
     @Published var geometry: NotchGeometry
     @Published private(set) var isExpanded = false
@@ -152,6 +156,8 @@ final class NotchModel: ObservableObject {
     @Published var downloading = false
     @Published var privacy = PrivacyState()
     @Published var dropTargeted = false
+    /// The pointer is over the closed notch: it swells a little, inviting a hover.
+    @Published var hovering = false
 
     let settings: AppSettings
 
@@ -160,6 +166,8 @@ final class NotchModel: ObservableObject {
     var onOpenSettings: (() -> Void)?
     /// Views with text fields ask for keyboard focus through this.
     var onRequestKeyboard: (() -> Void)?
+    /// Opens the notch again on a tab, after an open panel closes.
+    var onReopen: ((NotchTab) -> Void)?
 
     private var hudHide: DispatchWorkItem?
     private var activityHide: DispatchWorkItem?
@@ -205,7 +213,7 @@ final class NotchModel: ObservableObject {
         let body: CGSize
         switch presentation {
         case .expanded:
-            body = Self.expandedContentSize
+            body = expandedSize
         case .ringing:
             body = CGSize(width: max(notch.width + 230, 410), height: notch.height + 68)
         case .hud:
@@ -227,6 +235,10 @@ final class NotchModel: ObservableObject {
         case .collapsed:
             body = notch
         }
+        // Hovering swells the closed notch a touch before it opens.
+        if hovering, !isExpanded, ringing == nil, hud == nil, activity == nil {
+            return CGSize(width: body.width + 2 * topRadius + 16, height: body.height + 5)
+        }
         return CGSize(width: body.width + 2 * topRadius, height: body.height)
     }
 
@@ -241,6 +253,7 @@ final class NotchModel: ObservableObject {
     func setExpanded(_ expanded: Bool) {
         guard expanded != isExpanded else { return }
         isExpanded = expanded
+        hovering = false
         if expanded {
             hud = nil
             activity = nil
@@ -270,6 +283,21 @@ final class NotchModel: ObservableObject {
         let tabs = settings.visibleTabs
         guard let index = tabs.firstIndex(of: tab), !tabs.isEmpty else { return }
         tab = tabs[(index + offset + tabs.count) % tabs.count]
+    }
+
+    /// Folds the notch away while an open panel is up (the panel sits under the notch's level),
+    /// then reopens it on `tab` once the user has chosen.
+    func pick(_ present: (@escaping ([URL]) -> Void) -> Void, reopen tab: NotchTab, then handle: @escaping ([URL]) -> Void) {
+        requestCollapse()
+        present { [weak self] urls in
+            handle(urls)
+            self?.onReopen?(tab)
+        }
+    }
+
+    var expandedSize: CGSize {
+        let size = Self.expandedContentSize
+        return settings.showQuickLaunch ? CGSize(width: size.width, height: size.height + Self.dockHeight) : size
     }
 
     func requestCollapse() { onRequestCollapse?() }

@@ -37,6 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 5) { hub.services.clock.stopRinging() }
             }
         }
+        // `--preview-lockscreen` shows the lock-screen turntable over the desktop for a while.
+        if CommandLine.arguments.contains("--preview-lockscreen") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { hub.previewLockScreen(seconds: 20) }
+        }
         if !AppSettings.shared.onboarded || CommandLine.arguments.contains("--onboarding") {
             onboarding.show(settings: .shared) { [weak self] in self?.settingsWindow.show() }
         }
@@ -57,6 +61,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = item
     }
 
+    @objc private func previewLockScreen() { hub?.previewLockScreen(seconds: 12) }
+    @objc private func feedCat() { hub?.services.cat.feed() }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
@@ -72,6 +79,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             entry.representedObject = tab.rawValue
             menu.addItem(entry)
         }
+        let lock = NSMenuItem(title: "Preview Lock Screen", action: #selector(previewLockScreen), keyEquivalent: "")
+        lock.target = self
+        menu.addItem(lock)
+        let feed = NSMenuItem(title: "Feed \(AppSettings.shared.catName)", action: #selector(feedCat), keyEquivalent: "")
+        feed.target = self
+        if AppSettings.shared.catEnabled { menu.addItem(feed) }
         menu.addItem(.separator())
 
         let hud = NSMenuItem(title: "Replace macOS Volume & Brightness HUD", action: #selector(toggleSystemHUD), keyEquivalent: "")

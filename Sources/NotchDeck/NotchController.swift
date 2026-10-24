@@ -44,6 +44,7 @@ struct NotchServices {
     let shortcuts: ShortcutsService
     let script: ScriptRunner
     let updates: UpdateChecker
+    let cat: CatBrain
 
     static func live(settings: AppSettings) -> NotchServices {
         let player = NowPlaying()
@@ -57,7 +58,7 @@ struct NotchServices {
             camera: CameraMirror(), downloads: DownloadWatcher(), focus: FocusWatcher(), privacy: PrivacyMonitor(),
             accessories: AccessoryBatteries(), audio: AudioDevices(), displays: ExternalDisplays(),
             keyboard: KeyboardBacklight(), notes: NotesStore(), shortcuts: ShortcutsService(),
-            script: ScriptRunner(settings: settings), updates: UpdateChecker())
+            script: ScriptRunner(settings: settings), updates: UpdateChecker(), cat: CatBrain(settings: settings))
     }
 }
 
@@ -71,6 +72,7 @@ final class NotchHub {
     let hotKey = GlobalHotKey()
     private(set) var controllers: [NotchController] = []
     private let lockScreen = LockScreenWidget()
+    private var desktopCat: DesktopCat?
 
     var onOpenSettings: (() -> Void)?
 
@@ -82,6 +84,7 @@ final class NotchHub {
         rebuildControllers()
         wire()
         lockScreen.attach(services: services)
+        desktopCat = DesktopCat(brain: services.cat, settings: settings)
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             self?.services.brightness.refreshDisplay()
@@ -118,6 +121,11 @@ final class NotchHub {
 
     func expand(tab: NotchTab? = nil, sticky: Bool = false, keyboard: Bool = false) {
         focusedController?.expand(tab: tab, sticky: sticky, keyboard: keyboard)
+    }
+
+    func previewLockScreen(seconds: Double) {
+        lockScreen.show(onDesktop: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in self?.lockScreen.hide() }
     }
 
     func flashHUD(_ state: HUDState) { controllers.forEach { $0.model.flashHUD(state) } }
@@ -194,6 +202,12 @@ final class NotchHub {
             self.showActivity(ActivityState(symbol: "arrow.down.circle.fill", title: url.lastPathComponent,
                                             detail: self.settings.downloadsToTray ? "Downloaded · added to the tray" : "Downloaded",
                                             tint: .blue, progress: 1), for: 4)
+        }
+
+        s.cat.onHungry = { [weak self] name in
+            guard let self, self.settings.catEnabled else { return }
+            self.showActivity(ActivityState(symbol: "cat.fill", title: "\(name) is hungry",
+                                            detail: "Hover the cat and press Feed", tint: .orange, progress: nil), for: 5)
         }
 
         mediaKeys.handler = { [weak self] key, fine in self?.handleMediaKey(key, fineStep: fine) ?? false }
@@ -305,7 +319,7 @@ final class NotchController {
 
     var onOpenSettings: (() -> Void)?
 
-    static let windowSize = CGSize(width: 840, height: 330)
+    static let windowSize = CGSize(width: 880, height: 400)
 
     private let panel: NotchPanel
     private var monitors: [Any] = []
@@ -349,6 +363,9 @@ final class NotchController {
             self?.onOpenSettings?()
         }
         model.onRequestKeyboard = { [weak self] in self?.panel.makeKey() }
+        model.onReopen = { [weak self] tab in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.expand(tab: tab, sticky: true) }
+        }
 
         wireState()
         installMonitors()
@@ -587,6 +604,8 @@ final class NotchController {
             }
             return
         }
+        let over = model.screenRect.insetBy(dx: -2, dy: -2).contains(point)
+        if over != model.hovering { model.hovering = over }
         // In click mode only a drag opens the notch by itself.
         guard settings.openTrigger == .hover || externalDrag else { return }
         if hotZone().contains(point) {
@@ -621,7 +640,7 @@ final class NotchController {
     }
 }
 
-/// Now playing, battery and weather on the lock screen.
+/// The turntable and lyrics on the lock screen.
 final class LockScreenWidget {
     private var window: NSPanel?
     private var presenter: LockScreenPresenter?
@@ -637,32 +656,44 @@ final class LockScreenWidget {
                                             queue: .main) { [weak self] _ in self?.hide() })
     }
 
-    private func show() {
-        guard let services, services.settings.lockScreenWidget, let screen = NSScreen.main else { return }
+    /// `onDesktop` shows it over the desktop instead, for a few seconds (the `--preview-lockscreen` flag).
+    func show(onDesktop: Bool = false) {
+        guard let services, services.settings.lockScreenWidget || onDesktop, let screen = NSScreen.main else { return }
         if window == nil {
-            let size = CGSize(width: 440, height: 150)
-            let panel = NSPanel(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel],
-                                backing: .buffered, defer: false)
+            let size = LockScreenView.size
+            let panel = NSPanel(contentRect: CGRect(origin: .zero, size: CGSize(width: size.width + 80, height: size.height + 80)),
+                                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = false
+            panel.ignoresMouseEvents = true
             panel.level = .screenSaver
             panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-            let hosting = NSHostingView(rootView: LockScreenView(player: services.player, system: services.system,
-                                                                weather: services.weather, settings: services.settings))
+            let hosting = NSHostingView(rootView: LockScreenView(player: services.player, lyrics: services.lyrics,
+                                                                system: services.system, weather: services.weather,
+                                                                settings: services.settings)
+                .frame(maxWidth: .infinity, maxHeight: .infinity))
             hosting.sizingOptions = []
             panel.contentView = hosting
             window = panel
         }
         guard let window else { return }
+        services.player.refresh()
+        // Between the lock screen's clock and the password field.
         let frame = screen.frame
-        window.setFrameOrigin(CGPoint(x: frame.midX - window.frame.width / 2, y: frame.minY + 170))
+        window.setFrameOrigin(CGPoint(x: frame.midX - window.frame.width / 2, y: frame.midY - window.frame.height / 2 - 40))
+        window.alphaValue = 0
         window.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.5
+            window.animator().alphaValue = 1
+        }
+        guard !onDesktop else { return }
         if presenter == nil { presenter = LockScreenPresenter() }
         presenter?.delegate(window)
     }
 
-    private func hide() {
+    func hide() {
         window?.orderOut(nil)
     }
 }

@@ -197,7 +197,7 @@ struct NowPlayingCard: View {
     var body: some View {
         if let track = player.track {
             HStack(spacing: 16) {
-                ArtworkView(image: player.artwork, size: 112, corner: 16)
+                ArtworkView(image: player.artwork, size: 132, corner: 18)
                     .shadow(color: look.accent.opacity(0.35), radius: 16)
                     .onTapGesture { player.openPlayer() }
                 VStack(alignment: .leading, spacing: 3) {
@@ -253,7 +253,7 @@ struct NowPlayingCard: View {
             }
         } else {
             HStack(spacing: 16) {
-                ArtworkView(image: nil, size: 112, corner: 16)
+                ArtworkView(image: nil, size: 132, corner: 18)
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Nothing playing")
                         .font(.system(size: 15, weight: .semibold))

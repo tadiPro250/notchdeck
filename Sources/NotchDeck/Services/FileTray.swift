@@ -17,12 +17,26 @@ final class FileTray: ObservableObject {
     }
 
     func add(providers: [NSItemProvider]) {
+        Self.loadURLs(providers) { [weak self] urls in self?.add(urls) }
+    }
+
+    /// The file URLs in a drop, delivered on the main queue once all have loaded.
+    static func loadURLs(_ providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
+        let group = DispatchGroup()
+        var urls: [URL] = []
+        let lock = NSLock()
         for provider in providers where provider.canLoadObject(ofClass: URL.self) {
-            _ = provider.loadObject(ofClass: URL.self) { [weak self] url, _ in
-                guard let url, url.isFileURL else { return }
-                DispatchQueue.main.async { self?.add([url]) }
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url, url.isFileURL {
+                    lock.lock()
+                    urls.append(url)
+                    lock.unlock()
+                }
+                group.leave()
             }
         }
+        group.notify(queue: .main) { if !urls.isEmpty { completion(urls) } }
     }
 
     /// Where dropped files are copied when "Copy dropped files into the tray" is on.

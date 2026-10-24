@@ -81,6 +81,35 @@ enum Previews {
             }
         }
         shot("c1-island-open", theme: "ocean", geometry: island) { $0.setExpanded(true) }
+
+        // Lock screen, playing and paused.
+        for playing in [true, false] {
+            if !playing {
+                services.player.showPreview(Track(title: "Midnight City", artist: "M83", album: "Hurry Up, We're Dreaming",
+                                                  duration: 243, position: 87, isPlaying: false, player: .spotify,
+                                                  bundleID: "com.spotify.client", appName: "Spotify", artworkURL: nil,
+                                                  fetchedAt: Date()),
+                                            artwork: sampleArtwork(), accent: Color(red: 1, green: 0.55, blue: 0.75))
+            }
+            let lock = LockScreenView(player: services.player, lyrics: services.lyrics, system: services.system,
+                                      weather: services.weather, settings: settings)
+                .padding(40)
+                .background(LinearGradient(colors: [Color(red: 0.2, green: 0.25, blue: 0.45), Color(red: 0.5, green: 0.3, blue: 0.45)],
+                                           startPoint: .top, endPoint: .bottom))
+            save(lock, name: playing ? "d1-lock-playing" : "d2-lock-paused",
+                 size: CGSize(width: LockScreenView.size.width + 80, height: LockScreenView.size.height + 80), to: directory)
+        }
+
+        // The cat in every pose.
+        let cats = HStack(spacing: 20) {
+            ForEach(Array([CatBrain.Pose.walk, .sit, .sleep, .eat].enumerated()), id: \.offset) { index, pose in
+                CatFigure(pose: pose, mood: index == 1 ? .happy : .content, color: CatColor.allCases[index], time: 1.3)
+                    .frame(width: 150, height: 108)
+            }
+        }
+        .padding(20)
+        .background(Color(white: 0.25))
+        save(cats, name: "d3-cats", size: CGSize(width: 700, height: 150), to: directory)
     }
 
     private static func save<V: View>(_ view: V, name: String, size: CGSize, to directory: URL) {
@@ -172,7 +201,8 @@ enum Previews {
             camera: CameraMirror(), downloads: downloads, focus: FocusWatcher(live: false),
             privacy: PrivacyMonitor(live: false), accessories: accessories, audio: audio,
             displays: ExternalDisplays(live: false), keyboard: KeyboardBacklight(live: false), notes: notes,
-            shortcuts: shortcuts, script: script, updates: UpdateChecker())
+            shortcuts: shortcuts, script: script, updates: UpdateChecker(),
+            cat: CatBrain(settings: settings, live: false))
     }
 
     private static func sampleArtwork() -> NSImage {

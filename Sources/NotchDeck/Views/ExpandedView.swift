@@ -13,6 +13,8 @@ struct ExpandedView: View {
                 switch model.tab {
                 case .home:
                     HomeView(model: model, services: services, settings: settings)
+                case .widgets:
+                    WidgetsView(model: model, services: services, settings: settings)
                 case .tray:
                     TrayView(model: model, tray: services.tray)
                 case .calendar:
@@ -34,14 +36,17 @@ struct ExpandedView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 22)
             .padding(.top, 10)
-            .padding(.bottom, 20)
+            .padding(.bottom, settings.showQuickLaunch ? 6 : 20)
             .id(model.tab)
-            .transition(.opacity)
+            .transition(.asymmetric(insertion: .popIn(scale: 0.97), removal: .opacity.animation(.easeIn(duration: 0.1))))
+            if settings.showQuickLaunch {
+                QuickLaunchRow(model: model, settings: settings)
+                    .frame(height: NotchModel.dockHeight, alignment: .top)
+            }
         }
         .foregroundStyle(.white)
-        .animation(.easeOut(duration: 0.18), value: model.tab)
-        .frame(width: NotchModel.expandedContentSize.width,
-               height: NotchModel.expandedContentSize.height, alignment: .top)
+        .animation(.spring(response: 0.32, dampingFraction: 0.82), value: model.tab)
+        .frame(width: model.expandedSize.width, height: model.expandedSize.height, alignment: .top)
     }
 
     private var header: some View {
@@ -78,13 +83,15 @@ private struct TabButton: View {
                 .frame(width: 27, height: 24)
                 .background(Capsule().fill(selected ? look.accent.opacity(0.22)
                                                     : Color.white.opacity(hovering.value ? 0.08 : 0)))
+                .scaleEffect(hovering.value && !selected ? 1.08 : 1)
                 .foregroundStyle(selected ? look.accent : .white.opacity(0.5))
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .help(tab.title)
         .onHover { hovering.value = $0 }
-        .animation(.easeOut(duration: 0.15), value: selected)
+        .animation(.spring(response: 0.3, dampingFraction: 0.65), value: selected)
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: hovering.value)
     }
 }
 

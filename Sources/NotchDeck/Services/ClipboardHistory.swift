@@ -134,8 +134,13 @@ final class ClipboardHistory: ObservableObject {
         var pinned: Bool
     }
 
+    /// Keychain reads can block for seconds (a pending Keychain prompt, iCloud Keychain syncing),
+    /// so the key is fetched on this queue and never on the main thread.
+    private static let keyQueue = DispatchQueue(label: "notchdeck.clipboard.key")
+    private static var cachedKey: SymmetricKey?
+
     private func save() {
-        guard persists, settings.clipboardPersist, let key = Self.key() else { return }
+        guard persists, settings.clipboardPersist else { return }
         let saved: [Saved] = items.compactMap { item in
             switch item.content {
             case .text(let text): Saved(text: text, file: nil, date: item.date, pinned: item.pinned)
@@ -143,20 +148,35 @@ final class ClipboardHistory: ObservableObject {
             case .image: nil
             }
         }
-        guard let plain = try? JSONEncoder().encode(saved),
-              let sealed = try? AES.GCM.seal(plain, using: key).combined else { return }
-        try? sealed.write(to: store, options: .atomic)
+        guard let plain = try? JSONEncoder().encode(saved) else { return }
+        let store = store
+        Self.keyQueue.async {
+            guard let key = Self.cachedKey ?? Self.key(),
+                  let sealed = try? AES.GCM.seal(plain, using: key).combined else { return }
+            Self.cachedKey = key
+            try? sealed.write(to: store, options: .atomic)
+        }
     }
 
     private func load() {
-        guard let key = Self.key(), let data = try? Data(contentsOf: store),
-              let box = try? AES.GCM.SealedBox(combined: data),
-              let plain = try? AES.GCM.open(box, using: key),
-              let saved = try? JSONDecoder().decode([Saved].self, from: plain) else { return }
-        items = saved.compactMap { entry in
-            if let text = entry.text { return Item(content: .text(text), date: entry.date, pinned: entry.pinned) }
-            if let path = entry.file { return Item(content: .file(URL(fileURLWithPath: path)), date: entry.date, pinned: entry.pinned) }
-            return nil
+        let store = store
+        Self.keyQueue.async { [weak self] in
+            guard let key = Self.cachedKey ?? Self.key() else { return }
+            Self.cachedKey = key
+            guard let data = try? Data(contentsOf: store),
+                  let box = try? AES.GCM.SealedBox(combined: data),
+                  let plain = try? AES.GCM.open(box, using: key),
+                  let saved = try? JSONDecoder().decode([Saved].self, from: plain) else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let loaded: [Item] = saved.compactMap { entry in
+                    if let text = entry.text { return Item(content: .text(text), date: entry.date, pinned: entry.pinned) }
+                    if let path = entry.file { return Item(content: .file(URL(fileURLWithPath: path)), date: entry.date, pinned: entry.pinned) }
+                    return nil
+                }
+                // Anything copied while the key was loading stays on top.
+                self.items = self.items + loaded.filter { old in !self.items.contains { $0.content == old.content } }
+            }
         }
     }
 

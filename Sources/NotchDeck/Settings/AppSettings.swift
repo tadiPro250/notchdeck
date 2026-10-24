@@ -130,6 +130,28 @@ final class AppSettings: ObservableObject {
     @Published var cornerRadius: Double { didSet { save(cornerRadius, "cornerRadius") } }
     @Published var shadow: Bool { didSet { save(shadow, "shadow") } }
     @Published var glanceWidget: GlanceWidget { didSet { save(glanceWidget.rawValue, "glanceWidget") } }
+    @Published var glass: Bool { didSet { save(glass, "glass") } }
+    /// How see-through the glass is, 0 (solid) to 1 (clear).
+    @Published var glassClarity: Double { didSet { save(glassClarity, "glassClarity") } }
+    @Published var bouncyAnimation: Bool { didSet { save(bouncyAnimation, "bouncyAnimation") } }
+
+    // Background
+    @Published var backgroundMode: BackgroundMode { didSet { save(backgroundMode.rawValue, "backgroundMode") } }
+    @Published var backgroundPhotos: [String] { didSet { save(backgroundPhotos, "backgroundPhotos") } }
+    @Published var slideshowInterval: Double { didSet { save(slideshowInterval, "slideshowInterval") } }
+    @Published var backgroundDim: Double { didSet { save(backgroundDim, "backgroundDim") } }
+    @Published var backgroundBlur: Double { didSet { save(backgroundBlur, "backgroundBlur") } }
+
+    // Widgets and quick launch
+    @Published var widgets: [WidgetItem] { didSet { saveJSON(widgets, "widgets") } }
+    @Published var quickItems: [QuickItem] { didSet { saveJSON(quickItems, "quickItems") } }
+    @Published var showQuickLaunch: Bool { didSet { save(showQuickLaunch, "showQuickLaunch") } }
+
+    // Cat
+    @Published var catEnabled: Bool { didSet { save(catEnabled, "catEnabled") } }
+    @Published var catName: String { didSet { save(catName, "catName") } }
+    @Published var catColor: CatColor { didSet { save(catColor.rawValue, "catColor") } }
+    @Published var catSize: Double { didSet { save(catSize, "catSize") } }
 
     // Media
     @Published var visualizer: VisualizerStyle { didSet { save(visualizer.rawValue, "visualizer") } }
@@ -212,6 +234,28 @@ final class AppSettings: ObservableObject {
         cornerRadius = value("cornerRadius", 28)
         shadow = value("shadow", true)
         glanceWidget = choice("glanceWidget", .clock)
+        glass = value("glass", true)
+        glassClarity = value("glassClarity", 0.35)
+        bouncyAnimation = value("bouncyAnimation", true)
+
+        backgroundMode = choice("backgroundMode", .theme)
+        backgroundPhotos = d.stringArray(forKey: "backgroundPhotos") ?? []
+        slideshowInterval = value("slideshowInterval", 12)
+        backgroundDim = value("backgroundDim", 0.45)
+        backgroundBlur = value("backgroundBlur", 0)
+
+        func decoded<T: Decodable>(_ key: String, _ fallback: T) -> T {
+            d.data(forKey: key).flatMap { try? JSONDecoder().decode(T.self, from: $0) } ?? fallback
+        }
+        widgets = decoded("widgets", [WidgetItem(kind: .analogClock), WidgetItem(kind: .weather),
+                                      WidgetItem(kind: .battery), WidgetItem(kind: .cat)])
+        quickItems = decoded("quickItems", QuickItem.defaults)
+        showQuickLaunch = value("showQuickLaunch", true)
+
+        catEnabled = value("catEnabled", true)
+        catName = value("catName", "Mochi")
+        catColor = choice("catColor", .ginger)
+        catSize = value("catSize", 1)
 
         visualizer = choice("visualizer", .bars)
         showLiveActivity = value("showLiveActivity", true)
@@ -276,8 +320,15 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// Every photo a widget or the background still uses, so unused copies can be deleted.
+    var referencedImages: Set<String> { Set(backgroundPhotos + widgets.flatMap(\.images)) }
+
     private func save(_ value: Any, _ key: String) {
         defaults.set(value, forKey: key)
+    }
+
+    private func saveJSON<T: Encodable>(_ value: T, _ key: String) {
+        defaults.set(try? JSONEncoder().encode(value), forKey: key)
     }
 }
 

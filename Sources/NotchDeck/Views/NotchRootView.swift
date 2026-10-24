@@ -58,11 +58,8 @@ struct NotchRootView: View {
             Color.clear.frame(height: model.geometry.islandGap)
             ZStack(alignment: .top) {
                 if model.isExpanded {
-                    shape.fill(look.theme.background)
-                    if let glow = look.theme.glow {
-                        RadialGradient(colors: [glow.opacity(0.22), .clear], center: .bottom,
-                                       startRadius: 0, endRadius: 340)
-                    }
+                    PanelBackground(settings: settings, look: look, shape: shape, notchHeight: model.geometry.notchSize.height)
+                        .transition(.opacity.animation(.easeOut(duration: 0.2)))
                 } else {
                     shape.fill(Color.black)
                 }
@@ -71,10 +68,13 @@ struct NotchRootView: View {
             }
             .frame(width: model.shapeSize.width, height: model.shapeSize.height, alignment: .top)
             .clipShape(shape)
+            // A glass edge: catches the light along the bottom, invisible where it meets the notch.
+            .overlay(shape.stroke(LinearGradient(colors: [.clear, .white.opacity(model.isExpanded && settings.glass ? 0.22 : 0)],
+                                                 startPoint: .top, endPoint: .bottom), lineWidth: 1))
             .overlay(shape.stroke(look.accent.opacity(model.dropTargeted ? 0.7 : 0), lineWidth: 1.5))
             .overlay(shape.stroke(Color.white.opacity(model.isIsland && !model.isExpanded ? 0.08 : 0), lineWidth: 1))
-            .shadow(color: .black.opacity((model.isExpanded || model.isIsland) && settings.shadow ? 0.55 : 0),
-                    radius: 18, y: 8)
+            .shadow(color: .black.opacity((model.isExpanded || model.isIsland) && settings.shadow ? 0.5 : 0),
+                    radius: model.isExpanded ? 24 : 12, y: model.isExpanded ? 12 : 4)
             .onDrop(of: [UTType.fileURL], isTargeted: $model.dropTargeted) { providers in
                 services.tray.add(providers: providers)
                 model.tab = .tray
@@ -85,7 +85,16 @@ struct NotchRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.colorScheme, .dark)
         .environment(\.look, look)
-        .animation(.spring(response: 0.42, dampingFraction: 0.8), value: model.presentation)
+        .animation(springFor(model), value: model.presentation)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: model.hovering)
+    }
+
+    /// Opening overshoots a little and settles back, like a popover; closing tucks in quicker
+    /// with a smaller bounce. Without "Bouncy animation" both are critically damped.
+    private func springFor(_ model: NotchModel) -> Animation {
+        guard settings.bouncyAnimation else { return .spring(response: 0.38, dampingFraction: 1) }
+        return model.isExpanded ? .spring(response: 0.5, dampingFraction: 0.68)
+                                : .spring(response: 0.4, dampingFraction: 0.8)
     }
 
     @ViewBuilder
@@ -95,9 +104,8 @@ struct NotchRootView: View {
         case .expanded:
             ExpandedView(model: model, services: services, settings: settings)
                 .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.92, anchor: .top))
-                        .animation(.easeOut(duration: 0.22).delay(0.06)),
-                    removal: .opacity.animation(.easeIn(duration: 0.08))))
+                    insertion: .popIn(scale: 0.9).animation(.spring(response: 0.45, dampingFraction: 0.8).delay(0.07)),
+                    removal: .popIn(scale: 0.94).animation(.easeIn(duration: 0.12))))
         case .ringing(let ringing):
             RingingView(ringing: ringing, clock: services.clock, notch: notch)
                 .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
@@ -130,6 +138,67 @@ struct NotchRootView: View {
         case .collapsed:
             Color.clear
         }
+    }
+}
+
+/// The open panel's fill: the theme (as tinted glass, or solid), or the user's photos. The top
+/// edge is always pure black so the panel stays seamless with the hardware notch.
+private struct PanelBackground: View {
+    @ObservedObject var settings: AppSettings
+    let look: Look
+    let shape: NotchShape
+    let notchHeight: CGFloat
+
+    var body: some View {
+        let photos = settings.backgroundPhotos
+        ZStack {
+            if settings.backgroundMode != .theme, !photos.isEmpty {
+                Color.black
+                Slideshow(paths: settings.backgroundMode == .photo ? [photos[0]] : photos,
+                          interval: settings.slideshowInterval)
+                    .blur(radius: settings.backgroundBlur)
+                    .scaleEffect(settings.backgroundBlur > 0 ? 1.08 : 1)
+                Color.black.opacity(settings.backgroundDim)
+            } else if settings.glass {
+                Rectangle().fill(.ultraThinMaterial)
+                look.theme.background.opacity(1 - settings.glassClarity * 0.6)
+                Color.black.opacity(0.25 * (1 - settings.glassClarity))
+            } else {
+                look.theme.background
+            }
+            if let glow = look.theme.glow, settings.backgroundMode == .theme || photos.isEmpty {
+                RadialGradient(colors: [glow.opacity(0.22), .clear], center: .bottom, startRadius: 0, endRadius: 340)
+            }
+            // Black under the notch, fading out below it.
+            LinearGradient(stops: [.init(color: .black, location: 0),
+                                   .init(color: .black, location: 0.5),
+                                   .init(color: .black.opacity(0), location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: notchHeight * 2.2)
+                .frame(maxHeight: .infinity, alignment: .top)
+            // A faint sheen across the upper glass.
+            LinearGradient(colors: [.white.opacity(settings.glass ? 0.05 : 0), .clear], startPoint: .top, endPoint: .center)
+        }
+        .clipShape(shape)
+    }
+}
+
+struct PopIn: ViewModifier {
+    let active: Bool
+    let scale: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .blur(radius: active ? 10 : 0)
+            .scaleEffect(active ? scale : 1, anchor: .top)
+            .opacity(active ? 0 : 1)
+    }
+}
+
+extension AnyTransition {
+    /// Blurs and scales in from the top, the way system popovers bloom.
+    static func popIn(scale: CGFloat) -> AnyTransition {
+        .modifier(active: PopIn(active: true, scale: scale), identity: PopIn(active: false, scale: scale))
     }
 }
 

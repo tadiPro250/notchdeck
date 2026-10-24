@@ -39,6 +39,11 @@ final class LyricsService: ObservableObject {
         self.lines = lines
     }
 
+    /// Index of the line being sung at `position`, nil before the first.
+    func index(at position: Double) -> Int? {
+        lines.lastIndex(where: { $0.time <= position + 0.2 })
+    }
+
     /// The line being sung at `position`, plus the next one.
     func current(at position: Double) -> (now: String?, next: String?) {
         guard let index = lines.lastIndex(where: { $0.time <= position + 0.2 }) else {

@@ -3,7 +3,7 @@ import ServiceManagement
 import SwiftUI
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, appearance, displays, modules, media, activities, clock, desk, tray, weather, about
+    case general, appearance, displays, modules, media, activities, clock, desk, tray, weather, cat, about
     var id: String { rawValue }
 
     var title: String {
@@ -18,6 +18,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .desk: "Desk"
         case .tray: "Tray & Clipboard"
         case .weather: "Weather"
+        case .cat: "Desktop Cat"
         case .about: "About"
         }
     }
@@ -34,6 +35,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .desk: "square.and.pencil"
         case .tray: "tray.full.fill"
         case .weather: "cloud.sun.fill"
+        case .cat: "cat.fill"
         case .about: "info.circle.fill"
         }
     }
@@ -50,6 +52,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .desk: .yellow
         case .tray: .blue
         case .weather: .cyan
+        case .cat: .orange
         case .about: .secondary
         }
     }
@@ -149,6 +152,7 @@ struct SettingsView: View {
         case .desk: DeskPane(settings: settings)
         case .tray: TrayPane(settings: settings)
         case .weather: WeatherPane(settings: settings)
+        case .cat: CatPane(settings: settings, brain: services?.cat)
         case .about: AboutPane(settings: settings, updates: services?.updates ?? UpdateChecker())
         }
     }
@@ -304,6 +308,20 @@ private struct AppearancePane: View {
             Divider()
             ToggleRow(title: "Drop shadow", isOn: $settings.shadow)
         }
+        Card(title: "Glass and motion") {
+            ToggleRow(title: "Glass", detail: "The open notch is frosted glass tinted by the theme. The edge under the notch stays black.",
+                      isOn: $settings.glass)
+            Divider()
+            Row(title: "Clarity", detail: "How much of the desktop shows through.") {
+                Slider(value: $settings.glassClarity, in: 0...1).frame(width: 180)
+            }
+            .opacity(settings.glass ? 1 : 0.4)
+            .disabled(!settings.glass)
+            Divider()
+            ToggleRow(title: "Bouncy animation", detail: "Opening overshoots a touch and settles back, like a popover. Off: a smooth glide.",
+                      isOn: $settings.bouncyAnimation)
+        }
+        BackgroundCard(settings: settings)
         Card(title: "Home") {
             Row(title: "Right-hand widget", detail: "What sits next to Now Playing.") {
                 Picker("", selection: $settings.glanceWidget) {
@@ -336,7 +354,7 @@ private struct NotchPreview: View {
     var body: some View {
         GeometryReader { geo in
             let size = NotchController.windowSize
-            let scale = min(geo.size.width / size.width, geo.size.height / (NotchModel.expandedContentSize.height + 40))
+            let scale = min(geo.size.width / size.width, geo.size.height / (NotchModel.expandedContentSize.height + NotchModel.dockHeight + 60))
             ZStack(alignment: .top) {
                 LinearGradient(colors: [Color(red: 0.35, green: 0.45, blue: 0.75), Color(red: 0.75, green: 0.5, blue: 0.7)],
                                startPoint: .top, endPoint: .bottom)
@@ -363,6 +381,125 @@ private final class PreviewModelBox: ObservableObject {
         model.setExpanded(true)
         stored = model
         return model
+    }
+}
+
+private struct BackgroundCard: View {
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        Card(title: "Background") {
+            Row(title: "Background", detail: "A theme, one of your photos, or a slideshow of several.") {
+                Picker("", selection: $settings.backgroundMode) {
+                    ForEach(BackgroundMode.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 230)
+            }
+            if settings.backgroundMode != .theme {
+                Divider()
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(settings.backgroundPhotos, id: \.self) { path in
+                            ZStack(alignment: .topTrailing) {
+                                if let image = ImageLibrary.image(path, maxPixel: 240) {
+                                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                                        .frame(width: 96, height: 60).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                }
+                                Button {
+                                    settings.backgroundPhotos.removeAll { $0 == path }
+                                    ImageLibrary.prune(keeping: settings.referencedImages)
+                                } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.white, .black.opacity(0.6)) }
+                                .buttonStyle(.plain).padding(3)
+                            }
+                        }
+                        Button {
+                            FilePicker.images(multiple: settings.backgroundMode == .slideshow) { urls in
+                                let added = ImageLibrary.importImages(urls)
+                                if settings.backgroundMode == .photo {
+                                    settings.backgroundPhotos = added + settings.backgroundPhotos.filter { !added.contains($0) }
+                                } else {
+                                    settings.backgroundPhotos += added
+                                }
+                                ImageLibrary.prune(keeping: settings.referencedImages)
+                            }
+                        } label: {
+                            VStack(spacing: 4) {
+                                Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
+                                Text(settings.backgroundMode == .photo ? "Choose" : "Add").font(.system(size: 11))
+                            }
+                            .frame(width: 96, height: 60)
+                            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.secondary, style: StrokeStyle(lineWidth: 1, dash: [4])))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.vertical, 10)
+                }
+                if settings.backgroundMode == .photo, settings.backgroundPhotos.count > 1 {
+                    Text("Photo mode shows the first one; switch to Slideshow to cycle through them all.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).padding(.bottom, 6)
+                }
+                if settings.backgroundMode == .slideshow {
+                    Divider()
+                    Row(title: "Change every", detail: "\(Int(settings.slideshowInterval)) seconds") {
+                        Slider(value: $settings.slideshowInterval, in: 4...120, step: 1).frame(width: 180)
+                    }
+                }
+                Divider()
+                Row(title: "Dim", detail: "Keeps text readable over bright photos.") {
+                    Slider(value: $settings.backgroundDim, in: 0...0.85).frame(width: 180)
+                }
+                Divider()
+                Row(title: "Blur") {
+                    Slider(value: $settings.backgroundBlur, in: 0...30).frame(width: 180)
+                }
+            }
+        }
+    }
+}
+
+private struct CatPane: View {
+    @ObservedObject var settings: AppSettings
+    let brain: CatBrain?
+
+    var body: some View {
+        Card(title: "Your cat") {
+            ToggleRow(title: "Cat on the desktop", detail: "Wanders along the top of the Dock, naps, and asks for food. Hover it to feed it; click to pet.",
+                      isOn: $settings.catEnabled)
+            Divider()
+            Row(title: "Name") {
+                TextField("Name", text: $settings.catName).textFieldStyle(.roundedBorder).frame(width: 160)
+            }
+            Divider()
+            Row(title: "Coat") {
+                Picker("", selection: $settings.catColor) {
+                    ForEach(CatColor.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 260)
+            }
+            Divider()
+            Row(title: "Size", detail: "\(Int(settings.catSize * 100))%") {
+                Slider(value: $settings.catSize, in: 0.7...1.6, step: 0.05).frame(width: 180)
+            }
+        }
+        if let brain {
+            Card(title: "How it's doing") {
+                HStack(spacing: 18) {
+                    TimelineView(.animation(minimumInterval: 1 / 20)) { context in
+                        CatFigure(pose: .sit, mood: brain.mood, color: settings.catColor,
+                                  time: context.date.timeIntervalSinceReferenceDate * 2)
+                    }
+                    .frame(width: 110, height: 80)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.75)))
+                    CatCard(brain: brain, name: settings.catName)
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.75)))
+                        .environment(\.colorScheme, .dark)
+                }
+                .padding(.vertical, 10)
+                Text("A full bowl lasts about ten hours. A hungry cat gets a fish bubble, and the notch tells you once.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).padding(.bottom, 10)
+            }
+        }
     }
 }
 
@@ -494,11 +631,41 @@ private struct ModulesPane: View {
                 }
             }
         }
+        Card(title: "Quick-launch row") {
+            ToggleRow(title: "Show along the bottom of the notch",
+                      detail: "Apps and folders one click away. Drop files on an app to open them with it.",
+                      isOn: $settings.showQuickLaunch)
+            ForEach(settings.quickItems) { item in
+                Divider()
+                HStack(spacing: 10) {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: item.path)).resizable().frame(width: 20, height: 20)
+                    Text(item.name).font(.system(size: 13))
+                    if !item.exists { Text("missing").font(.system(size: 11)).foregroundStyle(.red) }
+                    Spacer()
+                    Button { settings.quickItems.removeAll { $0.id == item.id } } label: { Image(systemName: "minus.circle.fill") }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 6)
+            }
+            Divider()
+            HStack {
+                Button("Add Apps or Folders…") {
+                    FilePicker.appsOrFolders { urls in
+                        let known = Set(settings.quickItems.map(\.path))
+                        settings.quickItems += urls.map(\.path).filter { !known.contains($0) }.map { QuickItem(path: $0) }
+                    }
+                }
+                Spacer()
+                Button("Reset") { settings.quickItems = QuickItem.defaults }
+            }
+            .padding(.vertical, 8)
+        }
     }
 
     static func detail(_ tab: NotchTab) -> String {
         switch tab {
         case .home: "Now playing, the time, weather and your next event. Always on."
+        case .widgets: "Tiles you choose: photos, clocks, world time, weather, battery, countdowns, notes and the cat."
         case .tray: "A shelf for files: drag in, drag out, AirDrop."
         case .calendar: "Today's and tomorrow's events."
         case .clock: "Alarms, a timer and a stopwatch, all of which show in the closed notch."

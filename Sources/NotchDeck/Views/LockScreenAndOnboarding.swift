@@ -2,58 +2,6 @@ import AVFoundation
 import EventKit
 import SwiftUI
 
-/// Shown on the lock screen: what's playing (with controls), battery and weather.
-struct LockScreenView: View {
-    @ObservedObject var player: NowPlaying
-    @ObservedObject var system: SystemStatus
-    @ObservedObject var weather: WeatherService
-    @ObservedObject var settings: AppSettings
-
-    var body: some View {
-        let accent = settings.accent(artwork: player.artworkAccent)
-        VStack(spacing: 10) {
-            if let track = player.track {
-                HStack(spacing: 14) {
-                    ArtworkView(image: player.artwork, size: 64, corner: 12)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(track.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                        Text(track.artist).font(.system(size: 12)).foregroundStyle(.white.opacity(0.65)).lineLimit(1)
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            LevelBar(level: track.duration > 0 ? track.position(at: context.date) / track.duration : 0,
-                                     color: accent)
-                                .frame(height: 4)
-                        }
-                        .padding(.top, 4)
-                    }
-                    HStack(spacing: 14) {
-                        MediaButton(symbol: "backward.fill", size: 14) { player.previous() }
-                        MediaButton(symbol: track.isPlaying ? "pause.fill" : "play.fill", size: 20) { player.playPause() }
-                        MediaButton(symbol: "forward.fill", size: 14) { player.next() }
-                    }
-                }
-            }
-            HStack(spacing: 16) {
-                if let level = system.batteryLevel {
-                    Label("\(level)%", systemImage: system.isCharging ? "battery.100.bolt" : "battery.75")
-                }
-                if let w = weather.weather {
-                    Label("\(Int(w.temperature.rounded()))° \(w.summary)", systemImage: w.symbol)
-                        .symbolRenderingMode(.multicolor)
-                }
-                Spacer(minLength: 0)
-            }
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.white.opacity(0.85))
-        }
-        .foregroundStyle(.white)
-        .padding(18)
-        .background(RoundedRectangle(cornerRadius: 26, style: .continuous).fill(Color.black.opacity(0.45)))
-        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(Color.white.opacity(0.12)))
-        .environment(\.colorScheme, .dark)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 /// First launch: what NotchDeck does, and the permissions behind each feature.
 final class OnboardingWindowController {
     private var window: NSWindow?
