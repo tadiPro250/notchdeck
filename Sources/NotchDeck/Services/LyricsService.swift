@@ -69,6 +69,9 @@ final class LyricsService: ObservableObject {
             await MainActor.run {
                 guard let self, self.currentKey == key else { return }
                 self.isLoading = false
+                // A request that failed (offline, timeout) is not an answer: don't remember it, so
+                // the next time this song comes up it is asked for again.
+                guard let result else { return }
                 self.cache[key] = result
                 self.lines = result.0
                 self.plain = result.1
@@ -80,35 +83,95 @@ final class LyricsService: ObservableObject {
         let syncedLyrics: String?
         let plainLyrics: String?
         let instrumental: Bool?
+        let duration: Double?
     }
 
-    private static func fetch(title: String, artist: String, album: String, duration: Double) async -> ([Line], String?) {
-        var exact = URLComponents(string: "https://lrclib.net/api/get")!
-        exact.queryItems = [URLQueryItem(name: "track_name", value: title),
-                            URLQueryItem(name: "artist_name", value: artist)]
-        if !album.isEmpty { exact.queryItems?.append(URLQueryItem(name: "album_name", value: album)) }
-        if duration > 0 { exact.queryItems?.append(URLQueryItem(name: "duration", value: String(Int(duration.rounded())))) }
+    /// Asks LRCLIB in stages, each a little looser, and stops at the first synced answer:
+    /// the exact match; the cleaned title with the first artist (Spotify reports "Song - Remastered
+    /// 2011", "Song (feat. X)" and "A, B" as the artist); then a free-text search, preferring a
+    /// timed result whose length is within a few seconds of the song's. Returns nil only when
+    /// every request failed to get through.
+    private static func fetch(title: String, artist: String, album: String, duration: Double) async -> ([Line], String?)? {
+        let cleanTitle = cleaned(title)
+        let firstArtist = primaryArtist(artist)
+        var reached = false
+        var plainFallback: String?
 
-        if let record: Record = await get(exact.url!) {
-            return (parse(record.syncedLyrics), record.plainLyrics)
+        func take(_ record: Record) -> ([Line], String?)? {
+            if record.instrumental == true { return ([], nil) }
+            let lines = parse(record.syncedLyrics)
+            if !lines.isEmpty { return (lines, record.plainLyrics) }
+            plainFallback = plainFallback ?? record.plainLyrics
+            return nil
         }
-        var search = URLComponents(string: "https://lrclib.net/api/search")!
-        search.queryItems = [URLQueryItem(name: "track_name", value: title),
-                             URLQueryItem(name: "artist_name", value: artist)]
-        if let records: [Record] = await get(search.url!),
-           let best = records.first(where: { $0.syncedLyrics != nil }) ?? records.first {
-            return (parse(best.syncedLyrics), best.plainLyrics)
+
+        // 1 and 2: exact lookups. LRCLIB's /get wants the duration (within about 2 s).
+        var attempts: [(String, String, String?)] = [(title, artist, album.isEmpty ? nil : album)]
+        if cleanTitle != title || firstArtist != artist { attempts.append((cleanTitle, firstArtist, nil)) }
+        for (t, a, al) in attempts where duration > 0 {
+            var url = URLComponents(string: "https://lrclib.net/api/get")!
+            url.queryItems = [URLQueryItem(name: "track_name", value: t), URLQueryItem(name: "artist_name", value: a),
+                              URLQueryItem(name: "duration", value: String(Int(duration.rounded())))]
+            if let al { url.queryItems?.append(URLQueryItem(name: "album_name", value: al)) }
+            let (record, ok): (Record?, Bool) = await get(url.url!)
+            reached = reached || ok
+            if let record, let result = take(record) { return result }
         }
-        return ([], nil)
+
+        // 3: searches, field-wise and then free text.
+        var searches: [[URLQueryItem]] = [[URLQueryItem(name: "track_name", value: cleanTitle),
+                                           URLQueryItem(name: "artist_name", value: firstArtist)]]
+        searches.append([URLQueryItem(name: "q", value: "\(cleanTitle) \(firstArtist)")])
+        for query in searches {
+            var url = URLComponents(string: "https://lrclib.net/api/search")!
+            url.queryItems = query
+            let (records, ok): ([Record]?, Bool) = await get(url.url!)
+            reached = reached || ok
+            guard let records, !records.isEmpty else { continue }
+            let timed = records.filter { !parse($0.syncedLyrics).isEmpty }
+            let close = timed.first { record in
+                guard duration > 0, let d = record.duration else { return false }
+                return abs(d - duration) <= 3
+            }
+            if let best = close ?? timed.first { return (parse(best.syncedLyrics), best.plainLyrics) }
+            plainFallback = plainFallback ?? records.first { $0.plainLyrics != nil }?.plainLyrics
+        }
+        return reached ? ([], plainFallback) : nil
     }
 
-    private static func get<T: Decodable>(_ url: URL) async -> T? {
+    /// "Song - Remastered 2011", "Song (feat. X)", "Song - Radio Edit" -> "Song".
+    static func cleaned(_ title: String) -> String {
+        var t = title.replacingOccurrences(of: #"\s*[\(\[](feat\.?|ft\.?|with|from)\s[^\)\]]*[\)\]]"#, with: "",
+                                           options: [.regularExpression, .caseInsensitive])
+        t = t.replacingOccurrences(of: #"\s*[\(\[][^\)\]]*(remaster|version|edit|live|mix|mono|stereo|bonus|demo)[^\)\]]*[\)\]]"#,
+                                   with: "", options: [.regularExpression, .caseInsensitive])
+        t = t.replacingOccurrences(of: #"\s+-\s+.*(remaster|version|edit|live|mix|mono|stereo|from|bonus|demo).*$"#, with: "",
+                                   options: [.regularExpression, .caseInsensitive])
+        let trimmed = t.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? title : trimmed
+    }
+
+    /// "A, B", "A & B", "A feat. B", "A x B" -> "A".
+    static func primaryArtist(_ artist: String) -> String {
+        let first = artist.components(separatedBy: CharacterSet(charactersIn: ",&;"))[0]
+            .replacingOccurrences(of: #"\s+(feat\.?|ft\.?|x|with)\s+.*$"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: .whitespaces)
+        return first.isEmpty ? artist : first
+    }
+
+    /// The decoded body, and whether the server answered at all (a 404 is an answer: no lyrics).
+    private static func get<T: Decodable>(_ url: URL) async -> (T?, Bool) {
         var request = URLRequest(url: url)
         request.setValue("NotchDeck (https://github.com)", forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 8
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return try? JSONDecoder().decode(T.self, from: data)
+        request.timeoutInterval = 10
+        for attempt in 0..<2 {
+            if let (data, response) = try? await URLSession.shared.data(for: request),
+               let status = (response as? HTTPURLResponse)?.statusCode {
+                return (status == 200 ? try? JSONDecoder().decode(T.self, from: data) : nil, status < 500)
+            }
+            if attempt == 0 { try? await Task.sleep(nanoseconds: 700_000_000) }
+        }
+        return (nil, false)
     }
 
     /// Parses LRC: `[mm:ss.xx] words`.

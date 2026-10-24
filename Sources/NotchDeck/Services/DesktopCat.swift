@@ -2,40 +2,78 @@ import AppKit
 import Combine
 import SwiftUI
 
+/// The dog's coat. The raw values are the stored keys from when the pet was a cat, so a saved
+/// choice carries over.
 enum CatColor: String, CaseIterable, Identifiable {
     case ginger, midnight, smoke, snow
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .ginger: "Ginger"
-        case .midnight: "Midnight"
-        case .smoke: "Smoke"
-        case .snow: "Snow"
+        case .ginger: "Golden"
+        case .midnight: "Black"
+        case .smoke: "Grey"
+        case .snow: "White"
         }
     }
 
     var fur: Color {
         switch self {
-        case .ginger: Color(red: 0.96, green: 0.6, blue: 0.27)
-        case .midnight: Color(white: 0.16)
-        case .smoke: Color(red: 0.55, green: 0.58, blue: 0.63)
-        case .snow: Color(white: 0.95)
+        case .ginger: Color(red: 0.93, green: 0.7, blue: 0.38)
+        case .midnight: Color(white: 0.17)
+        case .smoke: Color(red: 0.6, green: 0.62, blue: 0.66)
+        case .snow: Color(white: 0.96)
         }
     }
 
-    var stripe: Color {
+    /// Ears and tail tip.
+    var ear: Color {
         switch self {
-        case .ginger: Color(red: 0.82, green: 0.42, blue: 0.13)
-        case .midnight: Color(white: 0.08)
-        case .smoke: Color(red: 0.42, green: 0.45, blue: 0.5)
-        case .snow: Color(white: 0.84)
+        case .ginger: Color(red: 0.76, green: 0.48, blue: 0.2)
+        case .midnight: Color(white: 0.09)
+        case .smoke: Color(red: 0.42, green: 0.44, blue: 0.5)
+        case .snow: Color(red: 0.74, green: 0.52, blue: 0.34)
         }
     }
 
-    var eye: Color { self == .midnight ? Color(red: 0.75, green: 0.95, blue: 0.3) : Color(white: 0.1) }
+    /// Snout and chest.
+    var muzzle: Color {
+        switch self {
+        case .ginger: Color(red: 1, green: 0.88, blue: 0.7)
+        case .midnight: Color(white: 0.3)
+        case .smoke: Color(red: 0.84, green: 0.85, blue: 0.88)
+        case .snow: Color.white
+        }
+    }
 }
 
-/// Where the cat lives.
+/// How often a happy pet gets the urge to chase the pointer.
+enum Playfulness: String, CaseIterable, Identifiable {
+    case off, rarely, sometimes, often
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+
+    /// Time between playful spells, so it is a mood and not a habit.
+    var interval: ClosedRange<TimeInterval>? {
+        switch self {
+        case .off: nil
+        case .rarely: 45 * 60...90 * 60
+        case .sometimes: 15 * 60...30 * 60
+        case .often: 4 * 60...8 * 60
+        }
+    }
+}
+
+/// Where the Feed button is.
+enum PetFeeding: String, CaseIterable, Identifiable {
+    /// A small card over the pet when the pointer rests on it.
+    case hover
+    /// The pet's tile in the notch's Widgets tab; nothing pops up on the desktop.
+    case notch
+    var id: String { rawValue }
+    var title: String { self == .hover ? "Hover card" : "The notch" }
+}
+
+/// Where the pet lives.
 enum CatPlacement: String, CaseIterable, Identifiable {
     /// Along the top of the Dock, free to roam the whole screen when it plays.
     case screen
@@ -157,12 +195,13 @@ final class CatBrain: ObservableObject {
 
 // MARK: Drawing
 
-/// A side-on cat in a 100 × 72 box, feet on the bottom edge, facing right.
+/// A side-on dog in a 100 × 72 box, feet on the bottom edge, facing right. (The type keeps its
+/// old name; the pet was a cat once.)
 struct CatFigure: View {
     let pose: CatBrain.Pose
     let mood: CatBrain.Mood
     let color: CatColor
-    /// Walk cycle phase in radians; also drives the tail and blinking.
+    /// Walk cycle phase in radians; also drives the tail, the tongue and blinking.
     let time: Double
 
     var body: some View {
@@ -175,190 +214,161 @@ struct CatFigure: View {
 
     private func draw(in context: inout GraphicsContext) {
         let fur = GraphicsContext.Shading.color(color.fur)
-        let stripe = GraphicsContext.Shading.color(color.stripe)
+        let ear = GraphicsContext.Shading.color(color.ear)
+        let muzzle = GraphicsContext.Shading.color(color.muzzle)
         let outline = GraphicsContext.Shading.color(.black.opacity(0.28))
-        let droop = mood == .starving ? 1.0 : 0
+        let droop = mood == .starving ? 1.0 : (mood == .hungry ? 0.5 : 0)
+        let happy = mood == .happy
         let t = time
+        // A happy dog's tail goes faster.
+        let wag = sin(t * (happy ? 2.6 : 1.2)) * (happy ? 1 : 0.5)
 
-        // Ground shadow.
-        context.fill(Path(ellipseIn: CGRect(x: 18, y: 66, width: 66, height: 6)), with: .color(.black.opacity(0.18)))
+        context.fill(Path(ellipseIn: CGRect(x: 16, y: 66, width: 70, height: 6)), with: .color(.black.opacity(0.18)))
 
         switch pose {
         case .sleep:
-            // A loaf, tail wrapped round, head tucked in.
+            // Curled up, tail round the front, chin on the paws.
             var tail = Path()
-            tail.move(to: CGPoint(x: 24, y: 62))
-            tail.addQuadCurve(to: CGPoint(x: 70, y: 68), control: CGPoint(x: 30, y: 74))
-            context.stroke(tail, with: stripe, style: StrokeStyle(lineWidth: 7, lineCap: .round))
+            tail.move(to: CGPoint(x: 22, y: 60))
+            tail.addQuadCurve(to: CGPoint(x: 58, y: 68), control: CGPoint(x: 24, y: 72))
+            context.stroke(tail, with: fur, style: StrokeStyle(lineWidth: 6, lineCap: .round))
             let breathe = 1 + 0.03 * sin(t * 1.2)
-            let body = Path(ellipseIn: CGRect(x: 18, y: 66 - 30 * breathe, width: 62, height: 30 * breathe))
+            let body = Path(ellipseIn: CGRect(x: 14, y: 66 - 28 * breathe, width: 62, height: 28 * breathe))
             context.fill(body, with: fur)
             context.stroke(body, with: outline, lineWidth: 0.8)
-            stripes(&context, stripe, x: 34, y: 66 - 28 * breathe, count: 3, height: 9)
-            head(&context, center: CGPoint(x: 76, y: 52), fur: fur, stripe: stripe, outline: outline,
-                 eyes: .closed, earDroop: 0.5)
-            // Floating Zs.
+            context.fill(Path(ellipseIn: CGRect(x: 60, y: 61, width: 22, height: 7)), with: muzzle)
+            head(&context, center: CGPoint(x: 72, y: 52), fur: fur, ear: ear, muzzle: muzzle, outline: outline,
+                 eyes: .closed, droop: 1, tongue: false, tilt: 8)
             for i in 0..<3 {
                 let phase = (t * 0.5 + Double(i) * 0.33).truncatingRemainder(dividingBy: 1)
                 let text = Text("z").font(.system(size: 7 + CGFloat(i) * 2, weight: .bold, design: .rounded))
                     .foregroundColor(.white.opacity(0.85 * (1 - phase)))
-                context.draw(text, at: CGPoint(x: 84 + phase * 10, y: 38 - phase * 30))
+                context.draw(text, at: CGPoint(x: 86 + phase * 10, y: 38 - phase * 30))
             }
-        case .walk, .sit, .eat:
-            let walking = pose == .walk
-            let sitting = pose == .sit
-            let bob = walking ? abs(sin(t)) * 1.5 : 0
-            // Tail.
-            var tail = Path()
-            let sway = sin(t * (walking ? 1 : 0.6)) * 6
-            if sitting {
-                tail.move(to: CGPoint(x: 40, y: 62))
-                tail.addQuadCurve(to: CGPoint(x: 16 + sway * 0.4, y: 64), control: CGPoint(x: 20, y: 72))
-                tail.addQuadCurve(to: CGPoint(x: 10, y: 52 + sway * 0.6), control: CGPoint(x: 8, y: 62))
-            } else {
-                tail.move(to: CGPoint(x: 22, y: 40 - bob))
-                tail.addQuadCurve(to: CGPoint(x: 8 + sway, y: 14 + droop * 22),
-                                  control: CGPoint(x: 4, y: 36 + droop * 10))
-            }
-            context.stroke(tail, with: stripe, style: StrokeStyle(lineWidth: 6.5, lineCap: .round, lineJoin: .round))
 
-            if sitting {
-                // Haunch and chest, upright.
-                let haunch = Path(ellipseIn: CGRect(x: 30, y: 38, width: 40, height: 30))
-                let chest = Path(ellipseIn: CGRect(x: 50, y: 28, width: 24, height: 38))
-                context.fill(haunch, with: fur)
-                context.stroke(haunch, with: outline, lineWidth: 0.8)
-                context.fill(chest, with: fur)
-                stripes(&context, stripe, x: 36, y: 40, count: 3, height: 10)
-                for x in [56.0, 64.0] {
-                    let leg = Path(roundedRect: CGRect(x: x, y: 52, width: 7, height: 16), cornerRadius: 3.5)
-                    context.fill(leg, with: fur)
-                    context.stroke(leg, with: outline, lineWidth: 0.6)
-                }
-                let blink = blinking(t)
-                head(&context, center: CGPoint(x: 66, y: 22), fur: fur, stripe: stripe, outline: outline,
-                     eyes: mood == .happy ? .happy : (blink ? .closed : .open), earDroop: droop)
+        case .sit:
+            tail(&context, from: CGPoint(x: 30, y: 54), to: CGPoint(x: 14 + wag * 6, y: 34 - abs(wag) * 3 + droop * 18),
+                 control: CGPoint(x: 14, y: 54), fur: fur, ear: ear)
+            let haunch = Path(ellipseIn: CGRect(x: 24, y: 38, width: 38, height: 30))
+            context.fill(haunch, with: fur)
+            context.stroke(haunch, with: outline, lineWidth: 0.8)
+            let paw = Path(ellipseIn: CGRect(x: 22, y: 61, width: 18, height: 7))
+            context.fill(paw, with: fur)
+            context.stroke(paw, with: outline, lineWidth: 0.6)
+            let chest = Path(ellipseIn: CGRect(x: 44, y: 24, width: 28, height: 42))
+            context.fill(chest, with: fur)
+            context.fill(Path(ellipseIn: CGRect(x: 55, y: 32, width: 14, height: 24)), with: muzzle)
+            for x in [52.0, 61.0] {
+                let leg = Path(roundedRect: CGRect(x: x, y: 46, width: 8, height: 22), cornerRadius: 4)
+                context.fill(leg, with: fur)
+                context.stroke(leg, with: outline, lineWidth: 0.6)
+            }
+            head(&context, center: CGPoint(x: 62, y: 20), fur: fur, ear: ear, muzzle: muzzle, outline: outline,
+                 eyes: happy ? .happy : (blinking(t) ? .closed : .open), droop: droop, tongue: happy, tilt: 0)
+
+        case .walk, .eat:
+            let walking = pose == .walk
+            let bob = walking ? abs(sin(t)) * 1.5 : 0
+            tail(&context, from: CGPoint(x: 20, y: 36 - bob), to: CGPoint(x: 6 + wag * 5, y: 18 + droop * 20),
+                 control: CGPoint(x: 6, y: 34), fur: fur, ear: ear)
+            let swing = walking ? sin(t) * 0.45 : 0
+            let legs: [(Double, Double)] = [(26, swing), (34, -swing), (60, -swing), (68, swing)]
+            for (x, angle) in legs {
+                var leg = context
+                leg.translateBy(x: x + 4, y: 48 - bob)
+                leg.rotate(by: .radians(angle))
+                let shape = Path(roundedRect: CGRect(x: -4, y: 0, width: 8, height: 20), cornerRadius: 4)
+                leg.fill(shape, with: x == 34 || x == 68 ? .color(color.fur.opacity(0.8)) : fur)
+                leg.stroke(shape, with: outline, lineWidth: 0.6)
+            }
+            let body = Path(roundedRect: CGRect(x: 16, y: 30 - bob, width: 62, height: 24), cornerRadius: 12)
+            context.fill(body, with: fur)
+            context.stroke(body, with: outline, lineWidth: 0.8)
+            context.fill(Path(ellipseIn: CGRect(x: 56, y: 40 - bob, width: 20, height: 13)), with: muzzle)
+            if pose == .eat {
+                let chomp = sin(t * 3) * 1.5
+                head(&context, center: CGPoint(x: 78, y: 48 + chomp), fur: fur, ear: ear, muzzle: muzzle, outline: outline,
+                     eyes: .happy, droop: 0, tongue: false, tilt: 14)
+                bowl(&context)
             } else {
-                // Legs first so the body overlaps them.
-                let swing = walking ? sin(t) * 0.45 : 0
-                let legs: [(Double, Double)] = [(28, swing), (36, -swing), (60, -swing), (68, swing)]
-                for (x, angle) in legs {
-                    var leg = context
-                    leg.translateBy(x: x + 3.5, y: 50 - bob)
-                    leg.rotate(by: .radians(angle))
-                    let shape = Path(roundedRect: CGRect(x: -3.5, y: 0, width: 7, height: 18), cornerRadius: 3.5)
-                    leg.fill(shape, with: x == 36 || x == 68 ? stripe : fur)
-                    leg.stroke(shape, with: outline, lineWidth: 0.6)
-                }
-                let body = Path(roundedRect: CGRect(x: 18, y: 32 - bob, width: 60, height: 26), cornerRadius: 13)
-                context.fill(body, with: fur)
-                context.stroke(body, with: outline, lineWidth: 0.8)
-                stripes(&context, stripe, x: 30, y: 33 - bob, count: 4, height: 9)
-                if pose == .eat {
-                    // Head down in the bowl, chomping.
-                    let chomp = sin(t * 3) * 1.5
-                    head(&context, center: CGPoint(x: 82, y: 50 + chomp), fur: fur, stripe: stripe, outline: outline,
-                         eyes: .happy, earDroop: 0)
-                    bowl(&context)
-                } else {
-                    head(&context, center: CGPoint(x: 80, y: 28 - bob), fur: fur, stripe: stripe, outline: outline,
-                         eyes: blinking(t) ? .closed : .open, earDroop: droop)
-                }
+                head(&context, center: CGPoint(x: 78, y: 24 - bob), fur: fur, ear: ear, muzzle: muzzle, outline: outline,
+                     eyes: blinking(t) ? .closed : .open, droop: droop, tongue: happy && walking, tilt: 0)
             }
         }
     }
 
     private enum Eyes { case open, closed, happy }
 
-    private func head(_ context: inout GraphicsContext, center c: CGPoint, fur: GraphicsContext.Shading,
-                      stripe: GraphicsContext.Shading, outline: GraphicsContext.Shading, eyes: Eyes, earDroop: Double) {
-        // Ears, flattening when the cat is unhappy.
-        let drop = earDroop * 5
-        for side in [-1.0, 1.0] {
-            var ear = Path()
-            ear.move(to: CGPoint(x: c.x + side * 4, y: c.y - 10))
-            ear.addLine(to: CGPoint(x: c.x + side * 8 + side * drop, y: c.y - 21 + drop * 1.4))
-            ear.addLine(to: CGPoint(x: c.x + side * 13, y: c.y - 7))
-            ear.closeSubpath()
-            context.fill(ear, with: fur)
-            context.stroke(ear, with: outline, lineWidth: 0.7)
-            var inner = Path()
-            inner.move(to: CGPoint(x: c.x + side * 6, y: c.y - 10))
-            inner.addLine(to: CGPoint(x: c.x + side * 8.5 + side * drop, y: c.y - 17 + drop * 1.2))
-            inner.addLine(to: CGPoint(x: c.x + side * 11, y: c.y - 9))
-            inner.closeSubpath()
-            context.fill(inner, with: .color(Color(red: 1, green: 0.7, blue: 0.75).opacity(0.85)))
-        }
-        let face = Path(ellipseIn: CGRect(x: c.x - 14, y: c.y - 12, width: 28, height: 24))
-        context.fill(face, with: fur)
-        context.stroke(face, with: outline, lineWidth: 0.8)
-        // Forehead stripes.
-        for dx in [-3.0, 0, 3] {
-            var mark = Path()
-            mark.move(to: CGPoint(x: c.x + dx, y: c.y - 11))
-            mark.addLine(to: CGPoint(x: c.x + dx * 0.7, y: c.y - 6))
-            context.stroke(mark, with: stripe, style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
-        }
-        // Eyes.
-        for dx in [-5.5, 5.5] {
-            let p = CGPoint(x: c.x + dx + 2, y: c.y - 1)
-            switch eyes {
-            case .open:
-                context.fill(Path(ellipseIn: CGRect(x: p.x - 2.2, y: p.y - 3, width: 4.4, height: 6)),
-                             with: .color(color.eye))
-                context.fill(Path(ellipseIn: CGRect(x: p.x - 0.4, y: p.y - 2.2, width: 1.6, height: 1.8)),
-                             with: .color(.white))
-            case .closed:
-                var lid = Path()
-                lid.move(to: CGPoint(x: p.x - 2.5, y: p.y))
-                lid.addQuadCurve(to: CGPoint(x: p.x + 2.5, y: p.y), control: CGPoint(x: p.x, y: p.y + 2.2))
-                context.stroke(lid, with: .color(.black.opacity(0.75)), style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
-            case .happy:
-                var arc = Path()
-                arc.move(to: CGPoint(x: p.x - 2.5, y: p.y + 1))
-                arc.addQuadCurve(to: CGPoint(x: p.x + 2.5, y: p.y + 1), control: CGPoint(x: p.x, y: p.y - 3))
-                context.stroke(arc, with: .color(.black.opacity(0.75)), style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
-            }
-        }
-        // Nose, mouth, cheeks, whiskers.
-        var nose = Path()
-        nose.move(to: CGPoint(x: c.x + 0.5, y: c.y + 4))
-        nose.addLine(to: CGPoint(x: c.x + 4.5, y: c.y + 4))
-        nose.addLine(to: CGPoint(x: c.x + 2.5, y: c.y + 6.5))
-        nose.closeSubpath()
-        context.fill(nose, with: .color(Color(red: 0.95, green: 0.45, blue: 0.55)))
-        context.fill(Path(ellipseIn: CGRect(x: c.x - 11, y: c.y + 3, width: 5, height: 3)),
-                     with: .color(Color(red: 1, green: 0.5, blue: 0.6).opacity(0.35)))
-        context.fill(Path(ellipseIn: CGRect(x: c.x + 8, y: c.y + 3, width: 5, height: 3)),
-                     with: .color(Color(red: 1, green: 0.5, blue: 0.6).opacity(0.35)))
-        for dy in [-1.0, 1.5] {
-            var whisker = Path()
-            whisker.move(to: CGPoint(x: c.x + 8, y: c.y + 6))
-            whisker.addLine(to: CGPoint(x: c.x + 19, y: c.y + 5 + dy * 2))
-            whisker.move(to: CGPoint(x: c.x - 4, y: c.y + 6))
-            whisker.addLine(to: CGPoint(x: c.x - 15, y: c.y + 5 + dy * 2))
-            context.stroke(whisker, with: .color(.white.opacity(0.7)), lineWidth: 0.6)
-        }
+    private func tail(_ context: inout GraphicsContext, from: CGPoint, to: CGPoint, control: CGPoint,
+                      fur: GraphicsContext.Shading, ear: GraphicsContext.Shading) {
+        var tail = Path()
+        tail.move(to: from)
+        tail.addQuadCurve(to: to, control: control)
+        context.stroke(tail, with: fur, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+        context.fill(Path(ellipseIn: CGRect(x: to.x - 3, y: to.y - 3, width: 6, height: 6)), with: ear)
     }
 
-    private func stripes(_ context: inout GraphicsContext, _ stripe: GraphicsContext.Shading, x: Double, y: Double,
-                         count: Int, height: Double) {
-        for i in 0..<count {
-            var mark = Path()
-            let sx = x + Double(i) * 9
-            mark.move(to: CGPoint(x: sx, y: y + 1))
-            mark.addQuadCurve(to: CGPoint(x: sx + 2, y: y + height), control: CGPoint(x: sx + 4, y: y + height * 0.4))
-            context.stroke(mark, with: stripe, style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
+    /// Head facing right: round skull, a snout with a black nose, one floppy ear, and a tongue
+    /// when it's happy. `tilt` turns the head down (degrees), for sleeping and eating.
+    private func head(_ context: inout GraphicsContext, center c: CGPoint, fur: GraphicsContext.Shading,
+                      ear: GraphicsContext.Shading, muzzle: GraphicsContext.Shading, outline: GraphicsContext.Shading,
+                      eyes: Eyes, droop: Double, tongue: Bool, tilt: Double) {
+        var g = context
+        g.translateBy(x: c.x, y: c.y)
+        g.rotate(by: .degrees(tilt))
+        let skull = Path(ellipseIn: CGRect(x: -12, y: -12, width: 25, height: 23))
+        g.fill(skull, with: fur)
+        g.stroke(skull, with: outline, lineWidth: 0.8)
+        let snout = Path(roundedRect: CGRect(x: 4, y: -1, width: 18, height: 12), cornerRadius: 6)
+        g.fill(snout, with: muzzle)
+        g.stroke(snout, with: outline, lineWidth: 0.6)
+        g.fill(Path(ellipseIn: CGRect(x: 17.5, y: -2.5, width: 6.5, height: 5.5)), with: .color(Color(white: 0.08)))
+        g.fill(Path(ellipseIn: CGRect(x: 19, y: -1.8, width: 2, height: 1.4)), with: .color(.white.opacity(0.6)))
+        var mouth = Path()
+        mouth.move(to: CGPoint(x: 11, y: 8.5))
+        mouth.addQuadCurve(to: CGPoint(x: 20, y: 7.5), control: CGPoint(x: 16, y: 11))
+        g.stroke(mouth, with: .color(.black.opacity(0.55)), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
+        if tongue {
+            let lick = 6 + sin(time * 5) * 1.2
+            let t = Path(roundedRect: CGRect(x: 13, y: 8.5, width: 5.5, height: lick), cornerRadius: 2.7)
+            g.fill(t, with: .color(Color(red: 1, green: 0.45, blue: 0.55)))
         }
+        // Eye.
+        let p = CGPoint(x: 3, y: -4)
+        switch eyes {
+        case .open:
+            g.fill(Path(ellipseIn: CGRect(x: p.x - 2, y: p.y - 2.4, width: 4, height: 4.8)), with: .color(Color(white: 0.08)))
+            g.fill(Path(ellipseIn: CGRect(x: p.x - 0.3, y: p.y - 1.8, width: 1.5, height: 1.5)), with: .color(.white))
+        case .closed:
+            var lid = Path()
+            lid.move(to: CGPoint(x: p.x - 2.5, y: p.y))
+            lid.addQuadCurve(to: CGPoint(x: p.x + 2.5, y: p.y), control: CGPoint(x: p.x, y: p.y + 2.2))
+            g.stroke(lid, with: .color(.black.opacity(0.75)), style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
+        case .happy:
+            var arc = Path()
+            arc.move(to: CGPoint(x: p.x - 2.5, y: p.y + 1))
+            arc.addQuadCurve(to: CGPoint(x: p.x + 2.5, y: p.y + 1), control: CGPoint(x: p.x, y: p.y - 3))
+            g.stroke(arc, with: .color(.black.opacity(0.75)), style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
+        }
+        // The floppy ear, over the back of the head; it hangs lower when the dog is unhappy.
+        let fall = droop * 3
+        var flap = Path()
+        flap.move(to: CGPoint(x: -3, y: -11))
+        flap.addQuadCurve(to: CGPoint(x: -13, y: 2 + fall), control: CGPoint(x: -15, y: -11))
+        flap.addQuadCurve(to: CGPoint(x: -6, y: 11 + fall), control: CGPoint(x: -15, y: 12 + fall))
+        flap.addQuadCurve(to: CGPoint(x: 1, y: -6), control: CGPoint(x: -2, y: 2))
+        flap.closeSubpath()
+        g.fill(flap, with: ear)
+        g.stroke(flap, with: outline, lineWidth: 0.6)
     }
 
     private func bowl(_ context: inout GraphicsContext) {
         var bowl = Path()
-        bowl.move(to: CGPoint(x: 72, y: 60))
-        bowl.addLine(to: CGPoint(x: 98, y: 60))
-        bowl.addQuadCurve(to: CGPoint(x: 74, y: 60), control: CGPoint(x: 86, y: 76))
-        context.fill(bowl, with: .color(Color(red: 0.3, green: 0.55, blue: 0.95)))
-        context.fill(Path(ellipseIn: CGRect(x: 76, y: 57, width: 18, height: 5)), with: .color(Color(red: 0.75, green: 0.5, blue: 0.3)))
+        bowl.move(to: CGPoint(x: 74, y: 60))
+        bowl.addLine(to: CGPoint(x: 100, y: 60))
+        bowl.addQuadCurve(to: CGPoint(x: 76, y: 60), control: CGPoint(x: 88, y: 76))
+        context.fill(bowl, with: .color(Color(red: 0.95, green: 0.35, blue: 0.35)))
+        context.fill(Path(ellipseIn: CGRect(x: 78, y: 57, width: 18, height: 5)), with: .color(Color(red: 0.6, green: 0.38, blue: 0.2)))
     }
 
     private func blinking(_ t: Double) -> Bool {
@@ -408,7 +418,12 @@ final class DesktopCat {
     private var targetX: CGFloat?
     private var poseUntil = Date()
     private var playUntil: Date?
+    /// The earliest the next playful spell may start.
+    private var nextPlay = Date()
     private var lastTick = Date()
+    private var lastMouse = CGPoint.zero
+    /// When the pointer was last MOVED onto the pet; the card waits for it to rest there.
+    private var hoverSince: Date?
 
     /// The window around the cat in screen mode, at size 1: room for the card above it.
     static let base = CGSize(width: 180, height: 150)
@@ -427,8 +442,23 @@ final class DesktopCat {
         settings.$catPlacement.dropFirst().removeDuplicates()
             .sink { [weak self] _ in DispatchQueue.main.async { self?.relayout(moveHome: true) } }
             .store(in: &bag)
-        settings.$catPlayful.removeDuplicates().filter { !$0 }
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.endPlay() } }
+        // Feeding from the notch needs the dog's tile there to feed it from.
+        settings.$catFeeding.removeDuplicates().filter { $0 == .notch }
+            .sink { _ in
+                DispatchQueue.main.async {
+                    if !settings.widgets.contains(where: { $0.kind == .cat }) {
+                        settings.widgets.append(WidgetItem(kind: .cat))
+                    }
+                }
+            }
+            .store(in: &bag)
+        settings.$catPlayfulness.removeDuplicates()
+            .sink { [weak self] level in
+                DispatchQueue.main.async {
+                    if level == .off { self?.endPlay() }
+                    self?.scheduleNextPlay(level)
+                }
+            }
             .store(in: &bag)
     }
 
@@ -547,16 +577,25 @@ final class DesktopCat {
         let dt = min(now.timeIntervalSince(lastTick), 0.1)
         lastTick = now
 
-        // Let the mouse through except over the cat itself, or the card while it's open.
+        // Let the mouse through except over the pet itself, or the card while it's open.
         let mouse = NSEvent.mouseLocation
+        let movedPointer = mouse != lastMouse
+        lastMouse = mouse
         let over = catRect(screen).contains(mouse) || (state.showCard && window.frame.contains(mouse))
         if window.ignoresMouseEvents == over { window.ignoresMouseEvents = !over }
-        // While it plays, the pointer is the toy: no card, it just keeps batting at it.
-        let hovering = over && playUntil == nil
-        if hovering != state.hovering { state.hovering = hovering }
+        // The card is for a pointer YOU put on the pet and leave there: never when the pet walks
+        // up to a still pointer, never while it plays, and not at all when feeding is in the notch.
+        if !over {
+            hoverSince = nil
+        } else if hoverSince == nil, movedPointer, playUntil == nil {
+            hoverSince = now
+        }
+        let wantsCard = settings.catFeeding == .hover && playUntil == nil
+            && (state.showCard ? over : (hoverSince.map { now.timeIntervalSince($0) > 0.5 } ?? false))
+        if wantsCard != state.hovering { state.hovering = wantsCard }
 
         if let until = playUntil {
-            if now >= until || !settings.catPlayful { endPlay() } else { chase(mouse, screen: screen, dt: dt); return }
+            if now >= until || settings.catPlayfulness == .off { endPlay() } else { chase(mouse, screen: screen, dt: dt); return }
         }
         if state.hovering || brain.pose == .eat { return }
 
@@ -622,9 +661,16 @@ final class DesktopCat {
         brain.pose = .walk
     }
 
+    private func scheduleNextPlay(_ level: Playfulness? = nil) {
+        guard let interval = (level ?? settings.catPlayfulness).interval else { return }
+        nextPlay = Date().addingTimeInterval(.random(in: interval))
+    }
+
     private func endPlay() {
         guard playUntil != nil else { return }
         playUntil = nil
+        hoverSince = nil
+        scheduleNextPlay()
         state.playfulSince = nil
         brain.pose = .sit
         poseUntil = Date().addingTimeInterval(.random(in: 3...6))
@@ -634,7 +680,7 @@ final class DesktopCat {
         let hour = Calendar.current.component(.hour, from: Date())
         let night = hour >= 23 || hour < 7
         // In the mood: a happy, awake cat now and then decides the pointer is prey.
-        if settings.catPlayful, !night, brain.mood == .happy, Double.random(in: 0..<1) < 0.14 {
+        if settings.catPlayfulness != .off, !night, brain.mood == .happy, Date() >= nextPlay {
             beginPlay()
             return
         }
@@ -696,10 +742,9 @@ private struct DesktopCatView: View {
                 .onAppear { state.showCard = true }
                 .onDisappear { state.showCard = false }
         } else if brain.isHungry, brain.pose != .eat, !state.cardBelow {
-            // A thought bubble with a fish in it.
-            Image(systemName: "fish.fill")
+            // A thought bubble with a bone in it.
+            Text("🦴")
                 .font(.system(size: 12 * scale))
-                .foregroundStyle(Color(red: 0.4, green: 0.7, blue: 1))
                 .padding(6 * scale)
                 .background(Circle().fill(.white.opacity(0.9)))
                 .offset(x: 26 * scale)
@@ -733,8 +778,7 @@ private struct DesktopCatView: View {
     }
 }
 
-/// Name, mood, fullness and happiness, with Feed and Pet. Used over the desktop cat and in the
-/// Widgets tab.
+/// Name, mood, fullness and happiness, with Feed. Used over the desktop pet and in the Widgets tab.
 struct CatCard: View {
     @ObservedObject var brain: CatBrain
     let name: String
@@ -754,16 +798,11 @@ struct CatCard: View {
                 meter(symbol: "heart.fill", value: brain.happiness, tint: Color(red: 1, green: 0.4, blue: 0.55),
                       help: "Happiness")
             }
-            VStack(spacing: 4) {
-                Button { brain.feed() } label: {
-                    Label("Feed", systemImage: "fish.fill").font(.system(size: 10.5, weight: .semibold))
-                }
-                .buttonStyle(CatButtonStyle(fill: Color(red: 0.35, green: 0.62, blue: 1)))
-                Button { brain.pet() } label: {
-                    Label("Pet", systemImage: "hand.raised.fill").font(.system(size: 10.5, weight: .semibold))
-                }
-                .buttonStyle(CatButtonStyle(fill: Color.white.opacity(0.16)))
+            // Feed only: petting is a click on the pet itself.
+            Button { brain.feed() } label: {
+                Label("Feed", systemImage: "fork.knife").font(.system(size: 10.5, weight: .semibold))
             }
+            .buttonStyle(CatButtonStyle(fill: Color(red: 0.35, green: 0.62, blue: 1)))
         }
         .foregroundStyle(.white)
         .padding(.horizontal, compact ? 10 : 0)

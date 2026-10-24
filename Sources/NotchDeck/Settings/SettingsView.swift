@@ -18,7 +18,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .desk: "Desk"
         case .tray: "Tray & Clipboard"
         case .weather: "Weather"
-        case .cat: "Desktop Cat"
+        case .cat: "Your Dog"
         case .about: "About"
         }
     }
@@ -35,7 +35,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .desk: "square.and.pencil"
         case .tray: "tray.full.fill"
         case .weather: "cloud.sun.fill"
-        case .cat: "cat.fill"
+        case .cat: "dog.fill"
         case .about: "info.circle.fill"
         }
     }
@@ -462,8 +462,8 @@ private struct CatPane: View {
     let brain: CatBrain?
 
     var body: some View {
-        Card(title: "Your cat") {
-            ToggleRow(title: "Cat on the desktop", detail: "Wanders, naps and asks for food. Hover it to feed it; click to pet.",
+        Card(title: "Your dog") {
+            ToggleRow(title: "Dog on the desktop", detail: "Wanders, naps and asks for food. Click it to pet it.",
                       isOn: $settings.catEnabled)
             Divider()
             Row(title: "Name") {
@@ -486,8 +486,21 @@ private struct CatPane: View {
                 .pickerStyle(.segmented).labelsHidden().frame(width: 220)
             }
             Divider()
-            ToggleRow(title: "Playful moods", detail: "Now and then a happy cat chases your pointer for a while.",
-                      isOn: $settings.catPlayful)
+            Row(title: "Playful mood", detail: "How often a happy dog chases your pointer for a while.") {
+                Picker("", selection: $settings.catPlayfulness) {
+                    ForEach(Playfulness.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 260)
+            }
+            Divider()
+            Row(title: "Feed from", detail: settings.catFeeding == .hover
+                ? "Rest the pointer on the dog for a moment and a Feed card appears."
+                : "Feed it from its tile in the notch's Widgets tab; nothing pops up on the desktop.") {
+                Picker("", selection: $settings.catFeeding) {
+                    ForEach(PetFeeding.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 220)
+            }
             Divider()
             Row(title: "Size", detail: settings.catPlacement == .notch
                 ? "Fitted to the notch" : "\(Int(settings.catSize * 100))%") {
@@ -510,7 +523,7 @@ private struct CatPane: View {
                         .environment(\.colorScheme, .dark)
                 }
                 .padding(.vertical, 10)
-                Text("A full bowl lasts about ten hours. A hungry cat gets a fish bubble, and the notch tells you once.")
+                Text("A full bowl lasts about ten hours. A hungry dog thinks of a bone, and the notch tells you once.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).padding(.bottom, 10)
             }
         }
@@ -679,7 +692,7 @@ private struct ModulesPane: View {
     static func detail(_ tab: NotchTab) -> String {
         switch tab {
         case .home: "Now playing, the time, weather and your next event. Always on."
-        case .widgets: "Tiles you choose: photos, clocks, world time, weather, battery, countdowns, notes and the cat."
+        case .widgets: "Tiles you choose: photos, clocks, world time, weather, battery, countdowns, notes and your dog."
         case .tray: "A shelf for files: drag in, drag out, AirDrop."
         case .calendar: "Today's and tomorrow's events."
         case .clock: "Alarms, a timer and a stopwatch, all of which show in the closed notch."

@@ -206,8 +206,10 @@ final class NotchHub {
 
         s.cat.onHungry = { [weak self] name in
             guard let self, self.settings.catEnabled else { return }
-            self.showActivity(ActivityState(symbol: "cat.fill", title: "\(name) is hungry",
-                                            detail: "Hover the cat and press Feed", tint: .orange, progress: nil), for: 5)
+            let detail = self.settings.catFeeding == .hover
+                ? "Rest the pointer on \(name) and press Feed" : "Open the notch → Widgets and press Feed"
+            self.showActivity(ActivityState(symbol: "dog.fill", title: "\(name) is hungry",
+                                            detail: detail, tint: .orange, progress: nil), for: 5)
         }
 
         mediaKeys.handler = { [weak self] key, fine in self?.handleMediaKey(key, fineStep: fine) ?? false }
@@ -647,30 +649,52 @@ final class NotchController {
     }
 }
 
-/// The turntable and lyrics on the lock screen.
+/// The full-screen record player on the lock screen. It is up whenever the Mac is locked and
+/// something is playing or paused, and gets out of the way when nothing is.
 final class LockScreenWidget {
     private var window: NSPanel?
     private var presenter: FloatingSpace?
     private var observers: [NSObjectProtocol] = []
     private var services: NotchServices?
+    private var bag = Set<AnyCancellable>()
+    private var locked = false
 
     func attach(services: NotchServices) {
         self.services = services
         let center = DistributedNotificationCenter.default()
         observers.append(center.addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil,
-                                            queue: .main) { [weak self] _ in self?.show() })
+                                            queue: .main) { [weak self] _ in
+            self?.locked = true
+            services.player.refresh()
+            // The player answers a moment later; decide then.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self?.update() }
+        })
         observers.append(center.addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil,
-                                            queue: .main) { [weak self] _ in self?.hide() })
+                                            queue: .main) { [weak self] _ in
+            self?.locked = false
+            self?.hide()
+        })
+        // While locked: a song starting brings it up, the player closing takes it down.
+        services.player.$track.map { $0 != nil }.removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.update() }
+            .store(in: &bag)
     }
 
-    /// `onDesktop` shows it over the desktop instead, for a few seconds (the `--preview-lockscreen` flag).
+    private func update() {
+        guard locked, let services else { return }
+        if services.settings.lockScreenWidget, services.player.track != nil { show() } else { hide() }
+    }
+
+    /// `onDesktop` shows it over the desktop instead, for a few seconds (the preview menu item).
     func show(onDesktop: Bool = false) {
         guard let services, services.settings.lockScreenWidget || onDesktop, let screen = NSScreen.main else { return }
         if window == nil {
             let panel = NSPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                                 backing: .buffered, defer: false)
-            panel.isOpaque = false
-            panel.backgroundColor = .clear
+            // Opaque: nothing of the wallpaper or the system clock shows through.
+            panel.isOpaque = true
+            panel.backgroundColor = .black
             panel.hasShadow = false
             panel.ignoresMouseEvents = true
             panel.level = .screenSaver
@@ -684,15 +708,17 @@ final class LockScreenWidget {
             window = panel
         }
         guard let window else { return }
-        services.player.refresh()
         // The whole display, edge to edge. It never takes the mouse or the keyboard, so typing the
         // password and pressing Return still unlocks the Mac underneath it.
         window.setFrame(screen.frame, display: true)
-        window.alphaValue = 0
+        let wasVisible = window.isVisible
+        if !wasVisible { window.alphaValue = 0 }
         window.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.5
-            window.animator().alphaValue = 1
+        if !wasVisible {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.5
+                window.animator().alphaValue = 1
+            }
         }
         guard !onDesktop else { return }
         if presenter == nil { presenter = FloatingSpace(level: .aboveScreenLock) }

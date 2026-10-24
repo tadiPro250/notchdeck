@@ -8,6 +8,7 @@ struct WidgetsView: View {
     let services: NotchServices
     @ObservedObject var settings: AppSettings
     @StateObject private var editing = ViewState<Bool>(false)
+    @StateObject private var petOptions = ViewState<Bool>(false)
     @Environment(\.look) private var look
 
     static let tile: CGFloat = 150
@@ -22,14 +23,15 @@ struct WidgetsView: View {
                     WrapLayout(spacing: 10) {
                         ForEach(settings.widgets) { item in
                             WidgetTile(item: item, model: model, services: services, settings: settings,
-                                       editing: editing.value) { remove(item) }
+                                       editing: editing.value, remove: { remove(item) },
+                                       openPetOptions: { showPetOptions() })
                                 .id(item.id)
                                 .transition(.opacity.combined(with: .scale(scale: 0.85)))
                         }
                         if settings.widgets.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("No widgets yet").font(.system(size: 14, weight: .semibold))
-                                Text("Press + to add photos, clocks, weather, your cat and more.")
+                                Text("Press + to add photos, clocks, weather, your dog and more.")
                                     .font(.system(size: 11))
                                     .foregroundStyle(look.theme.secondaryText)
                             }
@@ -66,7 +68,20 @@ struct WidgetsView: View {
                            help: editing.value ? "Done" : "Edit widgets") { editing.value.toggle() }
             }
         }
+        .overlay {
+            if petOptions.value {
+                PetOptions(settings: settings) { petOptions.value = false }
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+        }
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: settings.widgets)
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: petOptions.value)
+    }
+
+    private func showPetOptions() {
+        // The name field needs the keyboard, which a closed-over panel doesn't have by default.
+        model.requestKeyboard()
+        petOptions.value = true
     }
 
     private func add(_ kind: WidgetItem.Kind) {
@@ -81,6 +96,7 @@ struct WidgetsView: View {
         }
         settings.widgets.append(item)
         if kind == .photo { choosePhotos(for: item.id) }
+        if kind == .cat { showPetOptions() }
     }
 
     private func remove(_ item: WidgetItem) {
@@ -105,6 +121,7 @@ private struct WidgetTile: View {
     @ObservedObject var settings: AppSettings
     let editing: Bool
     let remove: () -> Void
+    let openPetOptions: () -> Void
     @StateObject private var hovering = ViewState<Bool>(false)
     @Environment(\.look) private var look
 
@@ -127,6 +144,20 @@ private struct WidgetTile: View {
                         .buttonStyle(.plain)
                         .padding(6)
                         .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    if item.kind == .cat, !editing {
+                        Button(action: openPetOptions) {
+                            Image(systemName: "gearshape.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                                .frame(width: 22, height: 22)
+                                .background(Circle().fill(Color.white.opacity(hovering.value ? 0.18 : 0.08)))
+                                .foregroundStyle(.white.opacity(hovering.value ? 0.9 : 0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Dog settings")
+                        .padding(7)
                     }
                 }
                 // A gentle wobble while editing, like the Home Screen.
@@ -174,6 +205,8 @@ private struct WidgetTile: View {
                     Button(preset.0) { update { $0.text = preset.0; $0.date = preset.1() } }
                 }
             }
+        case .cat:
+            Button("Dog Settings…", action: openPetOptions)
         default:
             EmptyView()
         }
@@ -533,6 +566,80 @@ private struct CatWidget: View {
             CatCard(brain: brain, name: settings.catName).scaleEffect(0.95)
         }
         .padding(.top, 6)
+    }
+}
+
+/// The dog's options, over the Widgets tab: everything Settings → Your Dog has, in one glance.
+private struct PetOptions: View {
+    @ObservedObject var settings: AppSettings
+    let done: () -> Void
+    @Environment(\.look) private var look
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Your dog", systemImage: "dog.fill").font(.system(size: 13, weight: .bold))
+                Spacer()
+                Button("Done", action: done)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .padding(.horizontal, 12).padding(.vertical, 4)
+                    .background(Capsule().fill(look.accent.opacity(0.3)))
+            }
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 9) {
+                    row("Name") {
+                        TextField("Name", text: $settings.catName)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 150)
+                    }
+                    row("Coat") {
+                        Picker("", selection: $settings.catColor) {
+                            ForEach(CatColor.allCases) { Text($0.title).tag($0) }
+                        }
+                        .pickerStyle(.segmented).labelsHidden().frame(width: 200)
+                    }
+                    row("Lives") {
+                        Picker("", selection: $settings.catPlacement) {
+                            ForEach(CatPlacement.allCases) { Text($0.title).tag($0) }
+                        }
+                        .pickerStyle(.segmented).labelsHidden().frame(width: 200)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 9) {
+                    row("Playful") {
+                        Picker("", selection: $settings.catPlayfulness) {
+                            ForEach(Playfulness.allCases) { Text($0.title).tag($0) }
+                        }
+                        .pickerStyle(.segmented).labelsHidden().frame(width: 230)
+                    }
+                    row("Feed from") {
+                        Picker("", selection: $settings.catFeeding) {
+                            ForEach(PetFeeding.allCases) { Text($0.title).tag($0) }
+                        }
+                        .pickerStyle(.segmented).labelsHidden().frame(width: 230)
+                    }
+                    row("On desktop") {
+                        Toggle("", isOn: $settings.catEnabled).toggleStyle(.switch).labelsHidden().controlSize(.mini)
+                    }
+                }
+            }
+            Text("Click the dog to pet it. Playful: how often a happy dog chases your pointer for a while.")
+                .font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.black.opacity(0.88)))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.12)))
+        .environment(\.colorScheme, .dark)
+    }
+
+    private func row<Control: View>(_ title: String, @ViewBuilder control: () -> Control) -> some View {
+        HStack(spacing: 8) {
+            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.7))
+                .frame(width: 66, alignment: .leading)
+            control()
+        }
     }
 }
 

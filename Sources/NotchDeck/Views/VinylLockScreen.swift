@@ -90,6 +90,8 @@ private struct AlbumBackdrop: View {
     var body: some View {
         let palette = AlbumPalette.colors(of: artwork, fallback: accent)
         ZStack {
+            // Solid underneath, so the lock screen's own wallpaper never shows through.
+            Color.black
             LinearGradient(colors: [palette[0].opacity(0.9), palette[1].opacity(0.75), .black],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
             // Large soft fields of colour, each on its own slow orbit (a minute or so per loop).

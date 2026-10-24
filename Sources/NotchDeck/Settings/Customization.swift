@@ -30,7 +30,7 @@ struct WidgetItem: Codable, Identifiable, Equatable {
             case .nextEvent: "Next event"
             case .countdown: "Countdown"
             case .stats: "System"
-            case .cat: "Cat"
+            case .cat: "Dog"
             case .note: "Note"
             }
         }
@@ -45,7 +45,7 @@ struct WidgetItem: Codable, Identifiable, Equatable {
             case .nextEvent: "calendar"
             case .countdown: "hourglass"
             case .stats: "cpu.fill"
-            case .cat: "cat.fill"
+            case .cat: "dog.fill"
             case .note: "note.text"
             }
         }

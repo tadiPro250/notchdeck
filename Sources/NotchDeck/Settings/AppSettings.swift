@@ -153,7 +153,8 @@ final class AppSettings: ObservableObject {
     @Published var catColor: CatColor { didSet { save(catColor.rawValue, "catColor") } }
     @Published var catSize: Double { didSet { save(catSize, "catSize") } }
     @Published var catPlacement: CatPlacement { didSet { save(catPlacement.rawValue, "catPlacement") } }
-    @Published var catPlayful: Bool { didSet { save(catPlayful, "catPlayful") } }
+    @Published var catPlayfulness: Playfulness { didSet { save(catPlayfulness.rawValue, "catPlayfulness") } }
+    @Published var catFeeding: PetFeeding { didSet { save(catFeeding.rawValue, "catFeeding") } }
 
     // Media
     @Published var visualizer: VisualizerStyle { didSet { save(visualizer.rawValue, "visualizer") } }
@@ -259,7 +260,9 @@ final class AppSettings: ObservableObject {
         catColor = choice("catColor", .ginger)
         catSize = value("catSize", 1)
         catPlacement = choice("catPlacement", .screen)
-        catPlayful = value("catPlayful", true)
+        // "catPlayful" was an on/off switch before the frequency choice; off stays off.
+        catPlayfulness = choice("catPlayfulness", value("catPlayful", true) ? .rarely : .off)
+        catFeeding = choice("catFeeding", .hover)
 
         visualizer = choice("visualizer", .bars)
         showLiveActivity = value("showLiveActivity", true)
