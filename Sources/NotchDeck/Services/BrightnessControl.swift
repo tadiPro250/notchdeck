@@ -7,7 +7,8 @@ final class BrightnessControl: ObservableObject {
     @Published private(set) var level: Double = 0
     @Published private(set) var isAvailable = false
 
-    /// Called when brightness changes from outside the app (keys, auto-brightness, Control Centre).
+    /// Called when brightness changes from outside the app (auto-brightness, Control Centre, keys
+    /// macOS handled itself). NotchDeck doesn't show a HUD for these.
     var onExternalChange: ((Double) -> Void)?
 
     private typealias Getter = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32

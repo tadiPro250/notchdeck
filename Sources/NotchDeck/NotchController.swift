@@ -134,9 +134,8 @@ final class NotchHub {
         s.volume.onExternalChange = { [weak self] level, muted in
             self?.flashHUD(HUDState(kind: .volume(muted: muted), level: muted ? 0 : level))
         }
-        s.brightness.onExternalChange = { [weak self] level in
-            self?.flashHUD(HUDState(kind: .brightness, level: level))
-        }
+        // Brightness changes the user didn't ask for (auto-brightness, plugging in the charger) are
+        // not shown: the brightness HUD appears only for the brightness keys, in handleMediaKey.
 
         s.system.onPowerEvent = { [weak self] pluggedIn, level in
             guard let self, self.settings.chargingActivity else { return }
