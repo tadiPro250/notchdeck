@@ -463,7 +463,7 @@ private struct CatPane: View {
 
     var body: some View {
         Card(title: "Your cat") {
-            ToggleRow(title: "Cat on the desktop", detail: "Wanders along the top of the Dock, naps, and asks for food. Hover it to feed it; click to pet.",
+            ToggleRow(title: "Cat on the desktop", detail: "Wanders, naps and asks for food. Hover it to feed it; click to pet.",
                       isOn: $settings.catEnabled)
             Divider()
             Row(title: "Name") {
@@ -477,8 +477,22 @@ private struct CatPane: View {
                 .pickerStyle(.segmented).labelsHidden().frame(width: 260)
             }
             Divider()
-            Row(title: "Size", detail: "\(Int(settings.catSize * 100))%") {
+            Row(title: "Where it lives", detail: settings.catPlacement == .notch
+                ? "Curled up in the menu bar beside the notch, and it stays there."
+                : "Along the top of the Dock; it roams the screen when it plays.") {
+                Picker("", selection: $settings.catPlacement) {
+                    ForEach(CatPlacement.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 220)
+            }
+            Divider()
+            ToggleRow(title: "Playful moods", detail: "Now and then a happy cat chases your pointer for a while.",
+                      isOn: $settings.catPlayful)
+            Divider()
+            Row(title: "Size", detail: settings.catPlacement == .notch
+                ? "Fitted to the notch" : "\(Int(settings.catSize * 100))%") {
                 Slider(value: $settings.catSize, in: 0.7...1.6, step: 0.05).frame(width: 180)
+                    .disabled(settings.catPlacement == .notch)
             }
         }
         if let brain {
@@ -521,7 +535,7 @@ private struct DisplaysPane: View {
         }
         Card(title: "Lock screen") {
             ToggleRow(title: "Show a widget on the lock screen",
-                      detail: "Now playing with controls, battery and weather while your Mac is locked.",
+                      detail: "A full-screen record player while your Mac is locked: the album's colours, the lyrics and the time. Type your password as usual to unlock.",
                       isOn: $settings.lockScreenWidget)
         }
     }

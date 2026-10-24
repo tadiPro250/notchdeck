@@ -35,6 +35,16 @@ enum CatColor: String, CaseIterable, Identifiable {
     var eye: Color { self == .midnight ? Color(red: 0.75, green: 0.95, blue: 0.3) : Color(white: 0.1) }
 }
 
+/// Where the cat lives.
+enum CatPlacement: String, CaseIterable, Identifiable {
+    /// Along the top of the Dock, free to roam the whole screen when it plays.
+    case screen
+    /// In the menu bar beside the notch, small enough to fit, and never anywhere else.
+    case notch
+    var id: String { rawValue }
+    var title: String { self == .screen ? "On the screen" : "On the notch" }
+}
+
 /// The cat's needs. Fullness drains over about ten hours and affection over six; both survive
 /// relaunches. Feeding and petting fill them back up.
 final class CatBrain: ObservableObject {
@@ -381,7 +391,8 @@ struct CatHearts: View {
 
 // MARK: The desktop window
 
-/// Moves the cat along the top of the Dock: it wanders, sits, naps, and comes to eat.
+/// Moves the cat around: along the top of the Dock, or in the menu bar beside the notch. It
+/// wanders, sits, naps and comes to eat, and when it's in a playful mood it chases the pointer.
 final class DesktopCat {
     private let brain: CatBrain
     private let settings: AppSettings
@@ -390,12 +401,19 @@ final class DesktopCat {
     private var bag = Set<AnyCancellable>()
     private let state = DesktopCatState()
 
+    /// Where the cat's feet are: `x` is the middle of the cat, `feet` its bottom edge. A nil
+    /// `feet` means on the floor (the Dock, or the menu bar in notch mode).
     private var x: CGFloat = 200
+    private var feet: CGFloat?
     private var targetX: CGFloat?
     private var poseUntil = Date()
+    private var playUntil: Date?
     private var lastTick = Date()
 
+    /// The window around the cat in screen mode, at size 1: room for the card above it.
     static let base = CGSize(width: 180, height: 150)
+    /// The cat drawing's own box.
+    static let figure = CGSize(width: 100, height: 72)
 
     init(brain: CatBrain, settings: AppSettings) {
         self.brain = brain
@@ -404,21 +422,64 @@ final class DesktopCat {
             .sink { [weak self] on in DispatchQueue.main.async { on ? self?.start() : self?.stop() } }
             .store(in: &bag)
         settings.$catSize.dropFirst().removeDuplicates()
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.resize() } }
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.relayout() } }
+            .store(in: &bag)
+        settings.$catPlacement.dropFirst().removeDuplicates()
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.relayout(moveHome: true) } }
+            .store(in: &bag)
+        settings.$catPlayful.removeDuplicates().filter { !$0 }
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.endPlay() } }
             .store(in: &bag)
     }
 
-    private var scale: CGFloat { CGFloat(settings.catSize) }
-    private var size: CGSize { CGSize(width: Self.base.width * scale, height: Self.base.height * scale) }
+    private var onNotch: Bool { settings.catPlacement == .notch }
+
+    /// The screen the cat lives on: the one with the notch in notch mode, else the main one.
+    private var screen: NSScreen? {
+        onNotch ? (NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main) : NSScreen.main
+    }
+
+    /// Height of the band beside the notch the cat sits in.
+    private func barHeight(_ screen: NSScreen) -> CGFloat { NotchGeometry.of(screen, island: false).notchSize.height }
+
+    /// The cat's drawing scale.
+    private func catScale(_ screen: NSScreen) -> CGFloat {
+        onNotch ? (barHeight(screen) - 3) / Self.figure.height : CGFloat(settings.catSize)
+    }
+
+    private func windowSize(_ screen: NSScreen) -> CGSize {
+        let s = catScale(screen)
+        if onNotch {
+            // The cat on top, the card hanging below it into the desktop when hovered.
+            return CGSize(width: 250, height: Self.figure.height * s + 82)
+        }
+        return CGSize(width: Self.base.width * s, height: Self.base.height * s)
+    }
+
+    /// The x range the cat may walk in. On the notch: from a little left of it to a little right,
+    /// passing behind it (it disappears into the notch and comes out the other side).
+    private func walkRange(_ screen: NSScreen) -> ClosedRange<CGFloat> {
+        let frame = screen.frame
+        if onNotch {
+            let notch = NotchGeometry.of(screen, island: false).notchSize.width
+            let reach = notch / 2 + 110
+            return (frame.midX - reach)...(frame.midX + reach)
+        }
+        let half = windowSize(screen).width / 2
+        return (screen.visibleFrame.minX + half)...(screen.visibleFrame.maxX - half)
+    }
+
+    private func floor(_ screen: NSScreen) -> CGFloat {
+        onNotch ? screen.frame.maxY - barHeight(screen) + 1 : screen.visibleFrame.minY
+    }
 
     private func start() {
-        guard window == nil else { return }
-        let panel = NSPanel(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel],
-                            backing: .buffered, defer: false)
+        guard window == nil, let screen else { return }
+        let panel = NSPanel(contentRect: CGRect(origin: .zero, size: windowSize(screen)),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) + 1)
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
@@ -426,8 +487,7 @@ final class DesktopCat {
         hosting.sizingOptions = []
         panel.contentView = hosting
         window = panel
-        if let screen = NSScreen.main { x = screen.visibleFrame.midX + 260 }
-        place()
+        relayout(moveHome: true)
         panel.orderFrontRegardless()
         timer = Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] _ in self?.tick() }
     }
@@ -439,35 +499,78 @@ final class DesktopCat {
         window = nil
     }
 
-    private func resize() {
-        guard let window else { return }
-        window.setContentSize(size)
+    /// Re-applies size, level and layout after a settings change.
+    private func relayout(moveHome: Bool = false) {
+        guard let window, let screen else { return }
+        // Notch mode sits in the menu bar, so it has to be above it; still under NotchDeck's own
+        // panel (main menu + 3), which covers it when the notch opens.
+        window.level = onNotch ? NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 2)
+                               : NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) + 1)
+        state.scale = catScale(screen)
+        state.cardBelow = onNotch
+        window.setContentSize(windowSize(screen))
+        if moveHome {
+            feet = nil
+            targetX = nil
+            let range = walkRange(screen)
+            x = onNotch ? range.upperBound - 20 : screen.visibleFrame.midX + 260
+        }
+        x = min(max(x, walkRange(screen).lowerBound), walkRange(screen).upperBound)
         place()
     }
 
-    /// Feet on the top edge of the Dock (or the bottom of the screen when the Dock hides).
     private func place() {
-        guard let window, let screen = NSScreen.main else { return }
-        let floor = screen.visibleFrame.minY
-        window.setFrameOrigin(CGPoint(x: x - size.width / 2, y: floor - 4 * scale))
+        guard let window, let screen else { return }
+        let size = windowSize(screen)
+        let s = catScale(screen)
+        let bottom = feet ?? floor(screen)
+        if onNotch {
+            // The cat is at the top of the window, the card below it.
+            let top = bottom + Self.figure.height * s
+            window.setFrameOrigin(CGPoint(x: x - size.width / 2, y: top - size.height))
+        } else {
+            window.setFrameOrigin(CGPoint(x: x - size.width / 2, y: bottom - 4 * s))
+        }
+    }
+
+    /// Where the drawn cat is on screen, for hit-testing the pointer.
+    private func catRect(_ screen: NSScreen) -> CGRect {
+        let s = catScale(screen)
+        let bottom = feet ?? floor(screen)
+        return CGRect(x: x - Self.figure.width * s / 2 + 8 * s, y: bottom, width: (Self.figure.width - 16) * s,
+                      height: Self.figure.height * s)
     }
 
     private func tick() {
-        guard let window, let screen = NSScreen.main else { return }
+        guard let window, let screen else { return }
         let now = Date()
-        let dt = now.timeIntervalSince(lastTick)
+        let dt = min(now.timeIntervalSince(lastTick), 0.1)
         lastTick = now
 
         // Let the mouse through except over the cat itself, or the card while it's open.
         let mouse = NSEvent.mouseLocation
-        let frame = window.frame
-        let catRect = CGRect(x: frame.minX + 30 * scale, y: frame.minY, width: frame.width - 60 * scale, height: 80 * scale)
-        let over = catRect.contains(mouse) || (state.showCard && frame.contains(mouse))
+        let over = catRect(screen).contains(mouse) || (state.showCard && window.frame.contains(mouse))
         if window.ignoresMouseEvents == over { window.ignoresMouseEvents = !over }
-        if over != state.hovering { state.hovering = over }
+        // While it plays, the pointer is the toy: no card, it just keeps batting at it.
+        let hovering = over && playUntil == nil
+        if hovering != state.hovering { state.hovering = hovering }
+
+        if let until = playUntil {
+            if now >= until || !settings.catPlayful { endPlay() } else { chase(mouse, screen: screen, dt: dt); return }
+        }
         if state.hovering || brain.pose == .eat { return }
 
-        let speed: CGFloat = (brain.isHungry ? 24 : 42) * scale
+        // After playing on the screen it walks back down to the Dock.
+        if let current = feet {
+            let home = floor(screen)
+            let step = 160 * catScale(screen) * CGFloat(dt)
+            brain.pose = .walk
+            feet = current - home <= step ? nil : current - step
+            place()
+            return
+        }
+
+        let speed: CGFloat = (brain.isHungry ? 24 : 42) * (onNotch ? 0.8 : catScale(screen))
         switch brain.pose {
         case .walk:
             guard let target = targetX else { decide(screen: screen); return }
@@ -481,11 +584,61 @@ final class DesktopCat {
         }
     }
 
+    /// Runs toward the pointer and stops just beside it, facing it. On the notch it only moves
+    /// sideways; on the screen it leaves the Dock and follows anywhere.
+    private func chase(_ mouse: CGPoint, screen: NSScreen, dt: Double) {
+        let s = catScale(screen)
+        let range = walkRange(screen)
+        let side: CGFloat = mouse.x >= x ? -1 : 1
+        let goalX = min(max(mouse.x + side * 34 * max(s, 0.6), range.lowerBound), range.upperBound)
+        var goalFeet = feet ?? floor(screen)
+        if !onNotch {
+            let visible = screen.visibleFrame
+            goalFeet = min(max(mouse.y - Self.figure.height * s * 0.45, visible.minY),
+                           visible.maxY - Self.figure.height * s)
+        }
+        let currentFeet = feet ?? floor(screen)
+        let dx = goalX - x, dy = goalFeet - currentFeet
+        let distance = (dx * dx + dy * dy).squareRoot()
+        state.facingRight = mouse.x > x
+        if distance < 6 {
+            if brain.pose != .sit { brain.pose = .sit }
+            return
+        }
+        let step = min(distance, 170 * max(s, 0.6) * CGFloat(dt))
+        x += dx / distance * step
+        if !onNotch {
+            let next = currentFeet + dy / distance * step
+            feet = next - floor(screen) < 0.5 ? nil : next
+        }
+        if brain.pose != .walk { brain.pose = .walk }
+        place()
+    }
+
+    private func beginPlay() {
+        playUntil = Date().addingTimeInterval(.random(in: 18...40))
+        targetX = nil
+        state.playfulSince = Date()
+        brain.pose = .walk
+    }
+
+    private func endPlay() {
+        guard playUntil != nil else { return }
+        playUntil = nil
+        state.playfulSince = nil
+        brain.pose = .sit
+        poseUntil = Date().addingTimeInterval(.random(in: 3...6))
+    }
+
     private func decide(screen: NSScreen) {
         let hour = Calendar.current.component(.hour, from: Date())
         let night = hour >= 23 || hour < 7
+        // In the mood: a happy, awake cat now and then decides the pointer is prey.
+        if settings.catPlayful, !night, brain.mood == .happy, Double.random(in: 0..<1) < 0.14 {
+            beginPlay()
+            return
+        }
         let roll = Double.random(in: 0..<1)
-        let range = (screen.visibleFrame.minX + size.width / 2)...(screen.visibleFrame.maxX - size.width / 2)
         if brain.pose == .walk || roll < (night ? 0.55 : 0.25) {
             // Rest: a nap, or a sit.
             let nap = roll < (night ? 0.45 : 0.12) || brain.happiness < 0.2
@@ -493,7 +646,7 @@ final class DesktopCat {
             poseUntil = Date().addingTimeInterval(nap ? .random(in: 40...120) : .random(in: 4...12))
         } else {
             brain.pose = .walk
-            targetX = CGFloat.random(in: range)
+            targetX = CGFloat.random(in: walkRange(screen))
         }
     }
 }
@@ -503,6 +656,11 @@ final class DesktopCatState: ObservableObject {
     @Published var hovering = false
     @Published var facingRight = true
     @Published var showCard = false
+    @Published var scale: CGFloat = 1
+    /// On the notch the card hangs below the cat instead of above it.
+    @Published var cardBelow = false
+    /// When the current playful spell began, for the little sparkle; nil when not playing.
+    @Published var playfulSince: Date?
 }
 
 private struct DesktopCatView: View {
@@ -511,41 +669,67 @@ private struct DesktopCatView: View {
     @ObservedObject var state: DesktopCatState
 
     var body: some View {
-        let scale = CGFloat(settings.catSize)
-        VStack(spacing: 4 * scale) {
-            Spacer(minLength: 0)
-            if state.hovering {
-                CatCard(brain: brain, name: settings.catName, compact: true)
-                    .scaleEffect(scale)
-                    .frame(height: 56 * scale)
-                    .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .bottom)))
-                    .onAppear { state.showCard = true }
-                    .onDisappear { state.showCard = false }
-            } else if brain.isHungry, brain.pose != .eat {
-                // A thought bubble with a fish in it.
-                Image(systemName: "fish.fill")
-                    .font(.system(size: 12 * scale))
-                    .foregroundStyle(Color(red: 0.4, green: 0.7, blue: 1))
-                    .padding(6 * scale)
-                    .background(Circle().fill(.white.opacity(0.9)))
-                    .offset(x: 26 * scale)
+        let scale = state.scale
+        VStack(spacing: 4 * max(scale, 0.6)) {
+            if state.cardBelow {
+                cat(scale)
+                card(scale: 1)
+                Spacer(minLength: 0)
+            } else {
+                Spacer(minLength: 0)
+                card(scale: scale)
+                cat(scale)
             }
-            ZStack(alignment: .top) {
-                TimelineView(.animation(minimumInterval: 1 / 30)) { context in
-                    let t = context.date.timeIntervalSinceReferenceDate * (brain.pose == .walk ? 7 : 2)
-                    CatFigure(pose: brain.pose, mood: brain.mood, color: settings.catColor, time: t)
-                        .scaleEffect(x: state.facingRight ? 1 : -1, y: 1)
-                }
-                .frame(width: 100 * scale, height: 72 * scale)
-                CatHearts(since: brain.heartsAt).offset(y: 6 * scale)
-            }
-            .contentShape(Rectangle())
-            .onTapGesture { brain.pet() }
-            .help("Click to pet \(settings.catName)")
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: state.cardBelow ? .top : .bottom)
         .animation(.spring(response: 0.35, dampingFraction: 0.75), value: state.hovering)
         .environment(\.colorScheme, .dark)
+    }
+
+    @ViewBuilder
+    private func card(scale: CGFloat) -> some View {
+        if state.hovering {
+            CatCard(brain: brain, name: settings.catName, compact: true)
+                .scaleEffect(scale)
+                .frame(height: 56 * scale)
+                .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: state.cardBelow ? .top : .bottom)))
+                .onAppear { state.showCard = true }
+                .onDisappear { state.showCard = false }
+        } else if brain.isHungry, brain.pose != .eat, !state.cardBelow {
+            // A thought bubble with a fish in it.
+            Image(systemName: "fish.fill")
+                .font(.system(size: 12 * scale))
+                .foregroundStyle(Color(red: 0.4, green: 0.7, blue: 1))
+                .padding(6 * scale)
+                .background(Circle().fill(.white.opacity(0.9)))
+                .offset(x: 26 * scale)
+        }
+    }
+
+    private func cat(_ scale: CGFloat) -> some View {
+        ZStack(alignment: .top) {
+            TimelineView(.animation(minimumInterval: 1 / 30)) { context in
+                let playing = state.playfulSince != nil
+                let t = context.date.timeIntervalSinceReferenceDate * (brain.pose == .walk ? (playing ? 10 : 7) : 2)
+                CatFigure(pose: brain.pose, mood: brain.mood, color: settings.catColor, time: t)
+                    .scaleEffect(x: state.facingRight ? 1 : -1, y: 1)
+                    .overlay(alignment: .topTrailing) {
+                        // A short sparkle when the playful mood starts.
+                        if let since = state.playfulSince, context.date.timeIntervalSince(since) < 2.5 {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 14 * max(scale, 0.7), weight: .bold))
+                                .foregroundStyle(Color(red: 1, green: 0.85, blue: 0.35))
+                                .opacity(1 - context.date.timeIntervalSince(since) / 2.5)
+                                .offset(x: 6 * scale, y: -8 * scale)
+                        }
+                    }
+            }
+            .frame(width: 100 * scale, height: 72 * scale)
+            CatHearts(since: brain.heartsAt).offset(y: 6 * scale)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { brain.pet() }
+        .help("Click to pet \(settings.catName)")
     }
 }
 

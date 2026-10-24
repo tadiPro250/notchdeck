@@ -91,13 +91,11 @@ enum Previews {
                                                   fetchedAt: Date()),
                                             artwork: sampleArtwork(), accent: Color(red: 1, green: 0.55, blue: 0.75))
             }
+            let screen = CGSize(width: 1512, height: 982)
             let lock = LockScreenView(player: services.player, lyrics: services.lyrics, system: services.system,
                                       weather: services.weather, settings: settings)
-                .padding(40)
-                .background(LinearGradient(colors: [Color(red: 0.2, green: 0.25, blue: 0.45), Color(red: 0.5, green: 0.3, blue: 0.45)],
-                                           startPoint: .top, endPoint: .bottom))
-            save(lock, name: playing ? "d1-lock-playing" : "d2-lock-paused",
-                 size: CGSize(width: LockScreenView.size.width + 80, height: LockScreenView.size.height + 80), to: directory)
+                .frame(width: screen.width, height: screen.height)
+            save(lock, name: playing ? "d1-lock-playing" : "d2-lock-paused", size: screen, to: directory)
         }
 
         // The cat in every pose.

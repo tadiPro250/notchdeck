@@ -14,24 +14,37 @@ struct WidgetsView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(settings.widgets) { item in
-                        WidgetTile(item: item, model: model, services: services, settings: settings,
-                                   editing: editing.value) { remove(item) }
-                            .transition(.scale(scale: 0.6).combined(with: .opacity))
-                    }
-                    if settings.widgets.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("No widgets yet").font(.system(size: 14, weight: .semibold))
-                            Text("Press + to add photos, clocks, weather, your cat and more.")
-                                .font(.system(size: 11))
-                                .foregroundStyle(look.theme.secondaryText)
+            // Rows that wrap and scroll VERTICALLY. A horizontal row could not be scrolled: the panel
+            // turns every two-finger horizontal swipe into a tab change, and a mouse wheel only
+            // scrolls vertically, so a new widget appended off the right edge was out of reach.
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    WrapLayout(spacing: 10) {
+                        ForEach(settings.widgets) { item in
+                            WidgetTile(item: item, model: model, services: services, settings: settings,
+                                       editing: editing.value) { remove(item) }
+                                .id(item.id)
+                                .transition(.opacity.combined(with: .scale(scale: 0.85)))
                         }
-                        .frame(width: 260, height: Self.tile, alignment: .leading)
+                        if settings.widgets.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("No widgets yet").font(.system(size: 14, weight: .semibold))
+                                Text("Press + to add photos, clocks, weather, your cat and more.")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(look.theme.secondaryText)
+                            }
+                            .frame(width: 260, height: Self.tile, alignment: .leading)
+                        }
+                    }
+                    // Room for the hover lift and shadow, which a scroll view would otherwise clip.
+                    .padding(6)
+                }
+                .onChange(of: settings.widgets.count) { old, count in
+                    guard count > old, let last = settings.widgets.last else { return }
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                        proxy.scrollTo(last.id, anchor: .bottom)
                     }
                 }
-                .padding(.vertical, 2)
             }
             VStack(spacing: 6) {
                 Menu {
@@ -53,7 +66,7 @@ struct WidgetsView: View {
                            help: editing.value ? "Done" : "Edit widgets") { editing.value.toggle() }
             }
         }
-        .animation(.spring(response: 0.4, dampingFraction: 0.75), value: settings.widgets)
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: settings.widgets)
     }
 
     private func add(_ kind: WidgetItem.Kind) {
@@ -180,6 +193,52 @@ private struct WidgetTile: View {
             settings.widgets[index].images = ImageLibrary.importImages(urls)
             ImageLibrary.prune(keeping: settings.referencedImages)
         }
+    }
+}
+
+/// Lays its children out left to right and starts a new row when the next one would not fit.
+/// Wide tiles simply take more of a row.
+struct WrapLayout: Layout {
+    var spacing: CGFloat = 10
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(width: proposal.width ?? .infinity, subviews: subviews)
+        let width = rows.map { $0.width }.max() ?? 0
+        let height = rows.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(rows.count - 1, 0))
+        return CGSize(width: proposal.width ?? width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in arrange(width: bounds.width, subviews: subviews) {
+            var x = bounds.minX
+            for (index, size) in row.items {
+                subviews[index].place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private struct Row {
+        var items: [(Int, CGSize)] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func arrange(width: CGFloat, subviews: Subviews) -> [Row] {
+        var rows: [Row] = [Row()]
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(.unspecified)
+            let needed = rows[rows.count - 1].items.isEmpty ? size.width : rows[rows.count - 1].width + spacing + size.width
+            if needed > width, !rows[rows.count - 1].items.isEmpty { rows.append(Row()) }
+            var row = rows[rows.count - 1]
+            row.width = row.items.isEmpty ? size.width : row.width + spacing + size.width
+            row.height = max(row.height, size.height)
+            row.items.append((index, size))
+            rows[rows.count - 1] = row
+        }
+        return rows.filter { !$0.items.isEmpty }
     }
 }
 

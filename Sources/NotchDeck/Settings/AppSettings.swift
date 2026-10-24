@@ -152,6 +152,8 @@ final class AppSettings: ObservableObject {
     @Published var catName: String { didSet { save(catName, "catName") } }
     @Published var catColor: CatColor { didSet { save(catColor.rawValue, "catColor") } }
     @Published var catSize: Double { didSet { save(catSize, "catSize") } }
+    @Published var catPlacement: CatPlacement { didSet { save(catPlacement.rawValue, "catPlacement") } }
+    @Published var catPlayful: Bool { didSet { save(catPlayful, "catPlayful") } }
 
     // Media
     @Published var visualizer: VisualizerStyle { didSet { save(visualizer.rawValue, "visualizer") } }
@@ -256,6 +258,8 @@ final class AppSettings: ObservableObject {
         catName = value("catName", "Mochi")
         catColor = choice("catColor", .ginger)
         catSize = value("catSize", 1)
+        catPlacement = choice("catPlacement", .screen)
+        catPlayful = value("catPlayful", true)
 
         visualizer = choice("visualizer", .bars)
         showLiveActivity = value("showLiveActivity", true)

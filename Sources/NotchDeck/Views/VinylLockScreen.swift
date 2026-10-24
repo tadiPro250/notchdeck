@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// The lock screen: a turntable on the left whose record is the album art, and the lyrics on the
-/// right in time with the song. No buttons: the play/pause and skip keys already do that, and the
-/// tonearm swings on and off the record as the music starts and stops.
+/// The lock screen, full screen: the album's colours as the whole background, a turntable whose
+/// record is the album art, the lyrics beside it in time with the song, and the time in a corner in
+/// the lock-screen clock's own font. No buttons: the play/pause and skip keys already do that, and
+/// the tonearm swings on and off the record as the music starts and stops.
 struct LockScreenView: View {
     @ObservedObject var player: NowPlaying
     @ObservedObject var lyrics: LyricsService
@@ -10,73 +11,218 @@ struct LockScreenView: View {
     @ObservedObject var weather: WeatherService
     @ObservedObject var settings: AppSettings
 
-    static let size = CGSize(width: 860, height: 330)
-
     var body: some View {
         let accent = settings.accent(artwork: player.artworkAccent)
         let playing = player.track?.isPlaying ?? false
-        HStack(spacing: 34) {
-            Turntable(artwork: player.artwork, isPlaying: playing, accent: accent)
-                .frame(width: 300, height: 270)
-            VStack(alignment: .leading, spacing: 0) {
-                if let track = player.track {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(track.title)
-                            .font(.system(size: 17, weight: .bold))
-                            .lineLimit(1)
-                        Text(track.artist)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.6))
-                            .lineLimit(1)
+        GeometryReader { geo in
+            // The turntable is drawn at 300 × 270 and scaled to about half the screen's height.
+            let k = min(max(geo.size.height * 0.5 / 270, 1), 2.1)
+            ZStack {
+                // Pinned to the screen: an aspect-filled square cover would otherwise grow the stack
+                // past it and push the clock and status line off the edges.
+                AlbumBackdrop(artwork: player.artwork, accent: accent)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .clipped()
+                VStack(spacing: 0) {
+                    HStack(alignment: .top) {
+                        CornerClock()
+                        Spacer()
+                        if let appName = player.track?.appName {
+                            Text(appName.uppercased())
+                                .font(.system(size: 11, weight: .bold))
+                                .tracking(1.5)
+                                .foregroundStyle(.white.opacity(0.45))
+                                .padding(.top, 10)
+                        }
                     }
-                    .padding(.bottom, 10)
-                    SyncedLyrics(track: track, lyrics: lyrics, accent: accent)
-                } else {
-                    Spacer()
-                    Text("Nothing playing")
-                        .font(.system(size: 22, weight: .bold))
-                    Text("Start a song and the needle drops.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.white.opacity(0.55))
-                    Spacer()
+                    Spacer(minLength: 0)
+                    HStack(spacing: 64 * k / 1.6) {
+                        Turntable(artwork: player.artwork, isPlaying: playing, accent: accent)
+                            .scaleEffect(k, anchor: .topLeading)
+                            .frame(width: 300 * k, height: 270 * k, alignment: .topLeading)
+                        VStack(alignment: .leading, spacing: 0) {
+                            if let track = player.track {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(track.title)
+                                        .font(.system(size: 30, weight: .bold))
+                                        .lineLimit(2)
+                                    Text(track.artist)
+                                        .font(.system(size: 19, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.6))
+                                        .lineLimit(1)
+                                }
+                                .padding(.bottom, 22)
+                                SyncedLyrics(track: track, lyrics: lyrics, accent: accent, scale: 1.35)
+                            } else {
+                                Spacer()
+                                Text("Nothing playing")
+                                    .font(.system(size: 34, weight: .bold))
+                                Text("Start a song and the needle drops.")
+                                    .font(.system(size: 17))
+                                    .foregroundStyle(.white.opacity(0.55))
+                                Spacer()
+                            }
+                        }
+                        .frame(maxWidth: 640, maxHeight: 270 * k, alignment: .leading)
+                    }
+                    Spacer(minLength: 0)
+                    StatusLine(system: system, weather: weather)
                 }
-                StatusLine(system: system, weather: weather, appName: player.track?.appName)
-                    .padding(.top, 8)
+                .padding(.horizontal, 64)
+                .padding(.top, 48)
+                .padding(.bottom, 40)
+                .frame(width: geo.size.width, height: geo.size.height)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .frame(width: geo.size.width, height: geo.size.height)
         }
         .foregroundStyle(.white)
-        .padding(.horizontal, 30)
-        .padding(.vertical, 24)
-        .background(CardBackground(artwork: player.artwork, accent: accent))
-        .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 36, style: .continuous)
-            .strokeBorder(LinearGradient(colors: [.white.opacity(0.28), .white.opacity(0.05)],
-                                         startPoint: .top, endPoint: .bottom), lineWidth: 1))
-        .shadow(color: .black.opacity(0.45), radius: 30, y: 14)
         .environment(\.colorScheme, .dark)
-        .frame(width: Self.size.width, height: Self.size.height)
+        .ignoresSafeArea()
     }
 }
 
-/// Frosted glass tinted by the album: the art itself, blurred far out, under a dark wash.
-private struct CardBackground: View {
+/// The background, made from the album: its art blurred far out, the colours that dominate it
+/// drifting slowly underneath, and a vignette so the text always reads.
+private struct AlbumBackdrop: View {
     let artwork: NSImage?
     let accent: Color
 
     var body: some View {
+        let palette = AlbumPalette.colors(of: artwork, fallback: accent)
         ZStack {
-            Color.black.opacity(0.5)
-            if let artwork {
-                Image(nsImage: artwork)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .blur(radius: 60)
-                    .opacity(0.55)
-                    .saturation(1.3)
+            LinearGradient(colors: [palette[0].opacity(0.9), palette[1].opacity(0.75), .black],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            // Large soft fields of colour, each on its own slow orbit (a minute or so per loop).
+            TimelineView(.animation(minimumInterval: 1 / 15)) { context in
+                let t = context.date.timeIntervalSinceReferenceDate
+                GeometryReader { geo in
+                    let w = geo.size.width, h = geo.size.height
+                    ZStack {
+                        ForEach(0..<3, id: \.self) { i in
+                            let speed = [0.09, 0.07, 0.11][i]
+                            let phase = Double(i) * 2.1
+                            RadialGradient(colors: [palette[i].opacity(0.75), palette[i].opacity(0)],
+                                           center: .center, startRadius: 0, endRadius: max(w, h) * 0.45)
+                                .frame(width: max(w, h) * 0.9, height: max(w, h) * 0.9)
+                                .position(x: w * (0.5 + 0.32 * cos(t * speed + phase)),
+                                          y: h * (0.5 + 0.28 * sin(t * speed * 1.3 + phase)))
+                        }
+                    }
+                }
             }
-            LinearGradient(colors: [.black.opacity(0.15), .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
-            RadialGradient(colors: [accent.opacity(0.22), .clear], center: .topLeading, startRadius: 0, endRadius: 420)
+            .blendMode(.plusLighter)
+            .opacity(0.55)
+            if let artwork {
+                Color.clear.overlay(
+                    Image(nsImage: artwork)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .blur(radius: 90)
+                        .saturation(1.35)
+                        .opacity(0.4)
+                )
+                .clipped()
+            }
+            // Vignette and a darker floor for the status line.
+            RadialGradient(colors: [.clear, .black.opacity(0.6)], center: .center, startRadius: 200, endRadius: 1100)
+            LinearGradient(colors: [.black.opacity(0.25), .clear, .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
+        }
+        .drawingGroup()
+        .ignoresSafeArea()
+    }
+}
+
+/// The three colours an album cover is mostly made of, most vivid first. Read from a 6 × 6
+/// thumbnail, so it costs nothing; a plain or missing cover falls back to the accent.
+enum AlbumPalette {
+    private static var cache: (ObjectIdentifier, [Color])?
+
+    static func colors(of image: NSImage?, fallback: Color) -> [Color] {
+        let plain = [fallback, fallback.opacity(0.7), Color(red: 0.15, green: 0.1, blue: 0.3)]
+        guard let image else { return plain }
+        if let cache, cache.0 == ObjectIdentifier(image) { return cache.1 }
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 6, pixelsHigh: 6, bitsPerSample: 8,
+                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return plain }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(x: 0, y: 0, width: 6, height: 6))
+        NSGraphicsContext.restoreGraphicsState()
+        var picked: [NSColor] = []
+        let pixels = (0..<6).flatMap { x in (0..<6).compactMap { y in rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) } }
+        // Vivid and not too dark first; skip ones too close to a colour already picked.
+        for c in pixels.sorted(by: { $0.saturationComponent * (0.4 + $0.brightnessComponent) >
+                                      $1.saturationComponent * (0.4 + $1.brightnessComponent) }) {
+            let far = picked.allSatisfy { abs($0.hueComponent - c.hueComponent) > 0.07 || abs($0.brightnessComponent - c.brightnessComponent) > 0.25 }
+            if far { picked.append(c) }
+            if picked.count == 3 { break }
+        }
+        while picked.count < 3 { picked.append(picked.last ?? NSColor(fallback)) }
+        // Keep them rich but never glaring behind white text.
+        let colors = picked.map { c in
+            Color(hue: c.hueComponent, saturation: min(c.saturationComponent * 1.15, 1),
+                  brightness: min(max(c.brightnessComponent, 0.35), 0.8))
+        }
+        cache = (ObjectIdentifier(image), colors)
+        return colors
+    }
+}
+
+/// The time and date, top left, in the font chosen for the lock-screen clock in System Settings.
+private struct CornerClock: View {
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            VStack(alignment: .leading, spacing: 2) {
+                Text(context.date, format: .dateTime.weekday(.wide).day().month(.wide))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.75))
+                Text(context.date, format: .dateTime.hour(.defaultDigits(amPM: .omitted)).minute())
+                    .font(LockClockFont.font(size: 64))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
+            }
+        }
+    }
+}
+
+/// The lock-screen clock's font, read from System Settings (`com.apple.loginwindow`
+/// `ClockFontIdentifier` and `ClockFontWeight`). Apple's own clock faces ("rail" and friends) are
+/// private to the system and can't be loaded by an app, so each is mapped to the nearest public
+/// face of the system font; the weight is used as set.
+enum LockClockFont {
+    static func font(size: CGFloat) -> Font {
+        let defaults = UserDefaults(suiteName: "com.apple.loginwindow")
+        let identifier = (defaults?.string(forKey: "ClockFontIdentifier") ?? "").lowercased()
+        let weight = weight(defaults?.object(forKey: "ClockFontWeight") as? Int ?? 500)
+        switch identifier {
+        case let id where id.contains("round") || id.contains("soft"):
+            return .system(size: size, weight: weight, design: .rounded)
+        case let id where id.contains("serif") || id.contains("york"):
+            return .system(size: size, weight: weight, design: .serif)
+        case let id where id.contains("mono"):
+            return .system(size: size, weight: weight, design: .monospaced)
+        case let id where id.contains("rail") || id.contains("compress"):
+            return .system(size: size, weight: weight).width(.compressed)
+        case let id where id.contains("condens"):
+            return .system(size: size, weight: weight).width(.condensed)
+        case let id where id.contains("expand") || id.contains("wide"):
+            return .system(size: size, weight: weight).width(.expanded)
+        default:
+            return .system(size: size, weight: weight)
+        }
+    }
+
+    private static func weight(_ value: Int) -> Font.Weight {
+        switch value {
+        case ..<150: .ultraLight
+        case ..<250: .thin
+        case ..<350: .light
+        case ..<450: .regular
+        case ..<550: .medium
+        case ..<650: .semibold
+        case ..<750: .bold
+        case ..<850: .heavy
+        default: .black
         }
     }
 }
@@ -89,8 +235,9 @@ final class TurntableMotor {
     private var speed: Double = 0
     private var last: Date?
 
-    /// 33⅓ rpm.
-    static let fullSpeed = 200.0
+    /// Degrees per second. A real 33⅓ rpm (200°/s) blurs the album art into a smear; this is
+    /// about 7.5 rpm, slow enough to read the cover as it turns.
+    static let fullSpeed = 45.0
 
     func advance(to date: Date, playing: Bool) -> Double {
         let dt = min(max(date.timeIntervalSince(last ?? date), 0), 0.1)
@@ -264,17 +411,18 @@ private struct SyncedLyrics: View {
     let track: Track
     @ObservedObject var lyrics: LyricsService
     let accent: Color
+    var scale: CGFloat = 1
 
     var body: some View {
         if lyrics.lines.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 Spacer()
                 Text(lyrics.isLoading ? "Finding lyrics…" : (lyrics.plain == nil ? "♪" : "Lyrics aren't timed for this one"))
-                    .font(.system(size: 24, weight: .bold))
+                    .font(.system(size: 24 * scale, weight: .bold))
                     .foregroundStyle(.white.opacity(0.85))
                 if let plain = lyrics.plain {
                     Text(plain.split(separator: "\n").prefix(4).joined(separator: "\n"))
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 14 * scale, weight: .medium))
                         .foregroundStyle(.white.opacity(0.45))
                         .lineLimit(4)
                 } else if !lyrics.isLoading {
@@ -287,7 +435,7 @@ private struct SyncedLyrics: View {
         } else {
             TimelineView(.periodic(from: .now, by: 0.2)) { context in
                 LyricsColumn(lines: lyrics.lines, index: lyrics.index(at: track.position(at: context.date)),
-                             accent: accent)
+                             accent: accent, scale: scale)
             }
         }
     }
@@ -297,16 +445,17 @@ private struct LyricsColumn: View {
     let lines: [LyricsService.Line]
     let index: Int?
     let accent: Color
+    var scale: CGFloat = 1
 
     var body: some View {
         let current = index ?? -1
         GeometryReader { geo in
-            let lineHeight: CGFloat = 40
+            let lineHeight: CGFloat = 40 * scale
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { offset, line in
                     let distance = abs(offset - current)
                     Text(line.text)
-                        .font(.system(size: offset == current ? 23 : 18, weight: .bold))
+                        .font(.system(size: (offset == current ? 23 : 18) * scale, weight: .bold))
                         .foregroundStyle(offset == current ? Color.white : Color.white.opacity(distance == 1 ? 0.42 : 0.22))
                         .shadow(color: offset == current ? accent.opacity(0.6) : .clear, radius: 12)
                         .blur(radius: distance >= 3 ? 1.2 : 0)
@@ -330,7 +479,6 @@ private struct LyricsColumn: View {
 private struct StatusLine: View {
     @ObservedObject var system: SystemStatus
     @ObservedObject var weather: WeatherService
-    let appName: String?
 
     var body: some View {
         HStack(spacing: 16) {
@@ -342,13 +490,8 @@ private struct StatusLine: View {
                     .symbolRenderingMode(.multicolor)
             }
             Spacer(minLength: 0)
-            if let appName {
-                Text(appName.uppercased())
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.4))
-            }
         }
-        .font(.system(size: 11.5, weight: .medium))
+        .font(.system(size: 13, weight: .medium))
         .foregroundStyle(.white.opacity(0.75))
     }
 }

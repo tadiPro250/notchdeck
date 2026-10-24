@@ -335,6 +335,9 @@ final class NotchController {
     private var swipeAccumulator: CGFloat = 0
     private var swipeLocked = false
 
+    /// Shared by every display's panel.
+    private static let fullScreenSpace = FloatingSpace(level: .aboveFullScreen)
+
     init(geometry: NotchGeometry, services: NotchServices) {
         self.services = services
         model = NotchModel(geometry: geometry, settings: services.settings)
@@ -356,6 +359,10 @@ final class NotchController {
         panel.contentView = hosting
         place()
         panel.orderFrontRegardless()
+        // Over full-screen apps too: `.fullScreenAuxiliary` alone stopped being honoured for an
+        // agent's panel, so the panel lives in a space that floats above every full-screen space
+        // but under the screen lock.
+        Self.fullScreenSpace.delegate(panel)
 
         model.onRequestCollapse = { [weak self] in self?.collapse() }
         model.onOpenSettings = { [weak self] in
@@ -643,7 +650,7 @@ final class NotchController {
 /// The turntable and lyrics on the lock screen.
 final class LockScreenWidget {
     private var window: NSPanel?
-    private var presenter: LockScreenPresenter?
+    private var presenter: FloatingSpace?
     private var observers: [NSObjectProtocol] = []
     private var services: NotchServices?
 
@@ -660,9 +667,8 @@ final class LockScreenWidget {
     func show(onDesktop: Bool = false) {
         guard let services, services.settings.lockScreenWidget || onDesktop, let screen = NSScreen.main else { return }
         if window == nil {
-            let size = LockScreenView.size
-            let panel = NSPanel(contentRect: CGRect(origin: .zero, size: CGSize(width: size.width + 80, height: size.height + 80)),
-                                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            let panel = NSPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
+                                backing: .buffered, defer: false)
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = false
@@ -679,9 +685,9 @@ final class LockScreenWidget {
         }
         guard let window else { return }
         services.player.refresh()
-        // Between the lock screen's clock and the password field.
-        let frame = screen.frame
-        window.setFrameOrigin(CGPoint(x: frame.midX - window.frame.width / 2, y: frame.midY - window.frame.height / 2 - 40))
+        // The whole display, edge to edge. It never takes the mouse or the keyboard, so typing the
+        // password and pressing Return still unlocks the Mac underneath it.
+        window.setFrame(screen.frame, display: true)
         window.alphaValue = 0
         window.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
@@ -689,7 +695,7 @@ final class LockScreenWidget {
             window.animator().alphaValue = 1
         }
         guard !onDesktop else { return }
-        if presenter == nil { presenter = LockScreenPresenter() }
+        if presenter == nil { presenter = FloatingSpace(level: .aboveScreenLock) }
         presenter?.delegate(window)
     }
 

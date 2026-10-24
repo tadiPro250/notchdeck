@@ -31,9 +31,19 @@ final class GlobalHotKey {
     }
 }
 
-/// Shows a window on the lock screen by moving it into a SkyLight space with a very high
-/// absolute level — the technique boring.notch and Atoll use for their lock-screen widgets.
-final class LockScreenPresenter {
+/// A SkyLight space with an absolute level, which floats above the ordinary and full-screen spaces.
+/// A window moved into one is drawn over everything below that level, on every display. This is
+/// the technique boring.notch and Atoll use for their lock-screen widgets.
+final class FloatingSpace {
+    /// Absolute space levels, from SkyLight's own ordering. 300 is the screen lock itself.
+    enum Level: Int32 {
+        /// Over normal and full-screen spaces, but under the screen lock and the security agent,
+        /// so nothing in it can be seen or clicked while the Mac is locked.
+        case aboveFullScreen = 1
+        /// Over the screen lock: the lock-screen player.
+        case aboveScreenLock = 400
+    }
+
     private typealias MainConnection = @convention(c) () -> Int32
     private typealias SpaceCreate = @convention(c) (Int32, Int32, Int32) -> Int32
     private typealias SpaceSetLevel = @convention(c) (Int32, Int32, Int32) -> Int32
@@ -44,22 +54,23 @@ final class LockScreenPresenter {
     private var space: Int32 = 0
     private var addWindows: AddWindows?
 
-    init() {
+    init(level: Level) {
         guard let handle = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY),
               let main = dlsym(handle, "SLSMainConnectionID"), let create = dlsym(handle, "SLSSpaceCreate"),
-              let level = dlsym(handle, "SLSSpaceSetAbsoluteLevel"), let show = dlsym(handle, "SLSShowSpaces"),
+              let setLevel = dlsym(handle, "SLSSpaceSetAbsoluteLevel"), let show = dlsym(handle, "SLSShowSpaces"),
               let add = dlsym(handle, "SLSSpaceAddWindowsAndRemoveFromSpaces") else { return }
         connection = unsafeBitCast(main, to: MainConnection.self)()
         space = unsafeBitCast(create, to: SpaceCreate.self)(connection, 1, 0)
-        _ = unsafeBitCast(level, to: SpaceSetLevel.self)(connection, space, 400)
+        _ = unsafeBitCast(setLevel, to: SpaceSetLevel.self)(connection, space, level.rawValue)
         _ = unsafeBitCast(show, to: ShowSpaces.self)(connection, [space] as CFArray)
         addWindows = unsafeBitCast(add, to: AddWindows.self)
     }
 
     var isAvailable: Bool { addWindows != nil && space != 0 }
 
+    /// Moves `window` into the space. It must already be on screen (it needs a window number).
     func delegate(_ window: NSWindow) {
-        guard let addWindows else { return }
+        guard let addWindows, window.windowNumber > 0 else { return }
         _ = addWindows(connection, space, [window.windowNumber] as CFArray, 7)
     }
 }
