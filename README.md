@@ -4,6 +4,14 @@ A mission control for the MacBook notch, in the spirit of Alcove, NotchNook, bor
 and Atoll. Hover (or click, or press ⌥Space) and the notch opens into a themed panel; move away and it
 folds back. Displays without a notch get a floating "island" or a virtual notch.
 
+![The full-screen vinyl lock screen: a turntable spinning the album art, synced lyrics beside it, and the time in the corner, over the album's colours](docs/screenshots/lock-screen.jpg)
+
+*The lock screen while a song plays: the record is the album art, the lyrics follow the song, and the background is made from the cover's colours.*
+
+![The desktop dog walking, sitting, sleeping and eating](docs/screenshots/dog.png)
+
+*The desktop dog, in its four moods.*
+
 ## Download
 
 Get **NotchDeck-<version>.dmg** from the [latest release](https://github.com/tadiPro250/notchdeck/releases/latest),
