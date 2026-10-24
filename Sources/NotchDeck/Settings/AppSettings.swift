@@ -288,7 +288,8 @@ final class AppSettings: ObservableObject {
         scriptCommand = value("scriptCommand", "uptime")
         scriptInterval = value("scriptInterval", 30)
 
-        updateRepository = value("updateRepository", "")
+        // Downloaded copies check the public repository for new releases out of the box.
+        updateRepository = value("updateRepository", "tadiPro250/notchdeck")
 
         copyDroppedFiles = value("copyDroppedFiles", false)
         clipboardEnabled = value("clipboardEnabled", true)

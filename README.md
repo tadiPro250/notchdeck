@@ -4,6 +4,18 @@ A mission control for the MacBook notch, in the spirit of Alcove, NotchNook, bor
 and Atoll. Hover (or click, or press ⌥Space) and the notch opens into a themed panel; move away and it
 folds back. Displays without a notch get a floating "island" or a virtual notch.
 
+## Download
+
+Get **NotchDeck-<version>.dmg** from the [latest release](https://github.com/tadiPro250/notchdeck/releases/latest),
+open it and drag NotchDeck into Applications. Needs macOS 14 or later.
+
+NotchDeck isn't notarized by Apple (that needs a paid Developer ID), so the first launch is blocked.
+Allow it once: open it, then go to **System Settings → Privacy & Security** and press **Open Anyway**
+(on older macOS, right-click the app → Open). It asks for Accessibility only if you keep the
+volume/brightness HUD replacement on; see [Permissions](#permissions).
+
+Updates: NotchDeck checks this repository's releases (Settings → About).
+
 ## Tabs
 
 | Tab | What it does |
