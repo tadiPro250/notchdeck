@@ -82,6 +82,29 @@ enum Previews {
         }
         shot("c1-island-open", theme: "ocean", geometry: island) { $0.setExpanded(true) }
 
+        // Tasks, Pomodoro, colours.
+        shot("e1-tasks", theme: "midnight") {
+            $0.setExpanded(true)
+            $0.tab = .tasks
+        }
+        shot("e2-overdue") { $0.overdueTask = services.tasks.overdue }
+        shot("e3-nudge") { $0.nudge = services.tasks.overdue }
+        services.pomodoro.showPreview(phase: .work, remaining: 14 * 60 + 32, round: 2)
+        shot("e4-pomodoro") { $0.pomodoroActive = true }
+        shot("e5-clock-focus", theme: "ember") {
+            $0.setExpanded(true)
+            $0.tab = .clock
+        }
+        shot("e6-color-picked") {
+            $0.showActivity(ActivityState(symbol: "eyedropper", title: "#FF6FA8", detail: "Copied · Saved to Colours · rgb(255, 111, 168)",
+                                          tint: .pink, progress: nil, swatch: "#FF6FA8"))
+        }
+        shot("e7-desk-colours", theme: "graphite") {
+            $0.setExpanded(true)
+            $0.tab = .desk
+            $0.deskSection = .colors
+        }
+
         // Lock screen, playing and paused.
         for playing in [true, false] {
             if !playing {
@@ -192,6 +215,19 @@ enum Previews {
         script.showPreview("## main...origin/main [ahead 2]\n M Sources/NotchDeck/App.swift\n?? Helpers/")
         let notes = NotesStore(live: false)
         notes.text = "Ideas: lyrics karaoke mode\nBuy: milk, coffee"
+        let tasks = TaskStore(settings: settings, live: false)
+        let hour: TimeInterval = 3600
+        tasks.showPreview([
+            TaskItem(title: "Forson's Flyers", due: now.addingTimeInterval(-1.31 * hour), spent: 2.1 * hour),
+            TaskItem(title: "Ntifafa Hotel Artworks", due: now.addingTimeInterval(41 * 60),
+                     steps: [TaskStep(title: "Get logo from hotel")]),
+            TaskItem(title: "Go through Jova's application", due: now.addingTimeInterval(3.7 * hour)),
+            TaskItem(title: "Generate newsletter", due: now.addingTimeInterval(-3 * hour), doneAt: now.addingTimeInterval(-hour),
+                     spent: 2.05 * hour),
+        ], focused: 6.37 * hour)
+        let pomodoro = PomodoroTimer(settings: settings, live: false)
+        let colors = ColorDropper(settings: settings, live: false)
+        colors.showPreview(["#FF6FA8", "#1DD1A1", "#54A0FF", "#FECA57", "#A29BFE", "#2E3440", "#F5F5F7", "#FF9F43"])
         return NotchServices(
             settings: settings, player: player, lyrics: lyrics, tray: tray, volume: VolumeControl(),
             brightness: BrightnessControl(), system: system, actions: QuickActions(), calendar: calendar,
@@ -200,7 +236,8 @@ enum Previews {
             privacy: PrivacyMonitor(live: false), accessories: accessories, audio: audio,
             displays: ExternalDisplays(live: false), keyboard: KeyboardBacklight(live: false), notes: notes,
             shortcuts: shortcuts, script: script, updates: UpdateChecker(),
-            cat: CatBrain(settings: settings, live: false))
+            cat: CatBrain(settings: settings, live: false),
+            tasks: tasks, pomodoro: pomodoro, colors: colors)
     }
 
     private static func sampleArtwork() -> NSImage {

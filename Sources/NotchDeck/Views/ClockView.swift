@@ -5,16 +5,35 @@ struct ClockView: View {
     let model: NotchModel
     @ObservedObject var clock: ClockCenter
     @ObservedObject var timer: FocusTimer
+    let pomodoro: PomodoroTimer
     @ObservedObject var settings: AppSettings
+    @StateObject private var focusMode: ViewState<Bool>
     @Environment(\.look) private var look
+
+    init(model: NotchModel, clock: ClockCenter, timer: FocusTimer, pomodoro: PomodoroTimer, settings: AppSettings) {
+        self.model = model
+        self.clock = clock
+        self.timer = timer
+        self.pomodoro = pomodoro
+        self.settings = settings
+        // Opens on Focus while a Pomodoro is under way.
+        _focusMode = StateObject(wrappedValue: ViewState(pomodoro.isActive))
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             AlarmsColumn(model: model, clock: clock)
                 .frame(width: 250)
             divider
-            TimerColumn(timer: timer)
-                .frame(width: 180)
+            VStack(spacing: 6) {
+                ModeSwitch(focus: $focusMode.value)
+                if focusMode.value {
+                    PomodoroColumn(pomodoro: pomodoro, settings: settings)
+                } else {
+                    TimerColumn(timer: timer)
+                }
+            }
+            .frame(width: 180)
             divider
             StopwatchColumn(clock: clock)
                 .frame(maxWidth: .infinity)
@@ -170,10 +189,9 @@ private struct TimerColumn: View {
 
     var body: some View {
         VStack(spacing: 7) {
-            ColumnHeader(title: "Timer", symbol: "timer") {
-                if !timer.isActive {
-                    Text("⌥ scroll = sec").foregroundStyle(.white.opacity(0.35)).font(.system(size: 9, weight: .medium))
-                }
+            if !timer.isActive {
+                Text("Scroll to set · ⌥ scroll for seconds")
+                    .foregroundStyle(.white.opacity(0.35)).font(.system(size: 9, weight: .medium))
             }
             if timer.isActive {
                 TimelineView(.periodic(from: .now, by: 0.5)) { context in
@@ -364,6 +382,98 @@ struct AccentPillStyle: ButtonStyle {
             .contentShape(Capsule())
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(.spring(response: 0.2, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+}
+
+/// Timer or Focus (Pomodoro), at the top of the middle column.
+private struct ModeSwitch: View {
+    @Binding var focus: Bool
+    @Environment(\.look) private var look
+
+    var body: some View {
+        HStack(spacing: 2) {
+            segment("Timer", "timer", selected: !focus) { focus = false }
+            segment("Focus", "brain.head.profile", selected: focus) { focus = true }
+        }
+        .padding(2)
+        .background(Capsule().fill(Color.white.opacity(0.07)))
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: focus)
+    }
+
+    private func segment(_ title: String, _ symbol: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 10, weight: .bold))
+                .frame(maxWidth: .infinity)
+                .frame(height: 20)
+                .foregroundStyle(selected ? look.accent : .white.opacity(0.55))
+                .background(Capsule().fill(selected ? look.accent.opacity(0.2) : .clear))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: Pomodoro
+
+private struct PomodoroColumn: View {
+    @ObservedObject var pomodoro: PomodoroTimer
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        let tint = pomodoro.phase.isBreak ? Color.green : Color(red: 1, green: 0.42, blue: 0.38)
+        VStack(spacing: 7) {
+            TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                ZStack {
+                    Circle().stroke(tint.opacity(0.18), lineWidth: 6)
+                    Circle()
+                        .trim(from: 0, to: pomodoro.isActive ? 1 - pomodoro.progress(at: context.date) : 1)
+                        .stroke(tint, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .shadow(color: tint.opacity(0.5), radius: 6)
+                    VStack(spacing: 0) {
+                        Text(pomodoro.phase.title.uppercased())
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(tint)
+                        Text(FocusTimer.clock(pomodoro.remaining(at: context.date)))
+                            .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
+                            .contentTransition(.numericText(countsDown: true))
+                    }
+                }
+                .frame(width: 96, height: 96)
+                .animation(.easeInOut(duration: 0.4), value: pomodoro.remaining(at: context.date))
+            }
+            // A dot per round: filled when done, ringed for the one under way.
+            HStack(spacing: 5) {
+                ForEach(1...pomodoro.rounds, id: \.self) { index in
+                    Circle()
+                        .fill(index < pomodoro.round || (index == pomodoro.round && pomodoro.phase.isBreak)
+                              ? tint : Color.white.opacity(0.15))
+                        .overlay(Circle().strokeBorder(index == pomodoro.round ? tint : .clear, lineWidth: 1.2))
+                        .frame(width: 7, height: 7)
+                }
+                Text("\(pomodoro.completedToday) today")
+                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.45))
+                    .padding(.leading, 4)
+            }
+            HStack(spacing: 6) {
+                Button {
+                    pomodoro.togglePause()
+                } label: {
+                    Label(pomodoro.isRunning ? "Pause" : (pomodoro.isPaused ? "Resume" : "Start"),
+                          systemImage: pomodoro.isRunning ? "pause.fill" : "play.fill")
+                        .frame(width: 70)
+                }
+                .buttonStyle(AccentPillStyle())
+                IconButton(symbol: "forward.end.fill", help: "Skip to the next phase") { pomodoro.skip() }
+                IconButton(symbol: "arrow.counterclockwise", help: "Start over") { pomodoro.reset() }
+            }
+            Text("\(settings.pomodoroWork) · \(settings.pomodoroShortBreak) · \(settings.pomodoroLongBreak) min")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.white.opacity(0.35))
+                .help("Work · short break · long break; change them in Settings → Clock")
+        }
     }
 }
 

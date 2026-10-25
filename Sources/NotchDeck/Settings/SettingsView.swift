@@ -3,12 +3,14 @@ import ServiceManagement
 import SwiftUI
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, appearance, displays, modules, media, activities, clock, desk, tray, weather, cat, about
+    case general, customise, appearance, displays, modules, media, activities, tasks, clock, desk, tray, weather, cat, about
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .general: "General"
+        case .customise: "Customise"
+        case .tasks: "Tasks"
         case .appearance: "Appearance"
         case .displays: "Displays"
         case .modules: "Modules"
@@ -26,6 +28,8 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: "gearshape.fill"
+        case .customise: "slider.horizontal.below.square.and.square.filled"
+        case .tasks: "checklist.checked"
         case .appearance: "paintpalette.fill"
         case .displays: "display.2"
         case .modules: "square.grid.2x2.fill"
@@ -43,6 +47,8 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     var tint: Color {
         switch self {
         case .general: .gray
+        case .customise: .purple
+        case .tasks: .red
         case .appearance: .pink
         case .displays: .teal
         case .modules: .indigo
@@ -143,6 +149,8 @@ struct SettingsView: View {
     private var content: some View {
         switch pane.value {
         case .general: GeneralPane(settings: settings)
+        case .customise: CustomisePane(settings: settings, services: services)
+        case .tasks: TasksPane(settings: settings)
         case .appearance: AppearancePane(settings: settings, services: services)
         case .displays: DisplaysPane(settings: settings)
         case .modules: ModulesPane(settings: settings)
@@ -384,6 +392,142 @@ private final class PreviewModelBox: ObservableObject {
     }
 }
 
+private struct TasksPane: View {
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        Card(title: "Deadlines") {
+            ToggleRow(title: "Count overtime in the closed notch",
+                      detail: "Once the task you're on is past its deadline: a red ring and +1:18:34, ticking.",
+                      isOn: $settings.tasksInNotch)
+            Divider()
+            ToggleRow(title: "Ask \u{201C}Still on it?\u{201D}",
+                      detail: "A card with Done, Not done and +10 min drops from the notch when a task runs over.",
+                      isOn: $settings.taskNudges)
+            Divider()
+            Row(title: "Ask again every") {
+                Stepper("\(settings.taskNudgeMinutes) min", value: $settings.taskNudgeMinutes, in: 5...120, step: 5)
+                    .frame(width: 120)
+            }
+            .disabled(!settings.taskNudges)
+            .opacity(settings.taskNudges ? 1 : 0.4)
+        }
+        Card {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Done finishes it. Not done steps away from it: it stays on the list and the next task becomes current. +10 min pushes the deadline ten minutes from now. × asks again later.")
+                Text("Focused time counts while a task is current (or a Pomodoro work phase runs) and you're at the Mac. The flame is the number of days in a row you finished something.")
+            }
+            .font(.system(size: 11)).foregroundStyle(.secondary)
+            .padding(.vertical, 10)
+        }
+    }
+}
+
+/// Everything about the notch itself, from the closed shape to the open panel.
+private struct CustomisePane: View {
+    @ObservedObject var settings: AppSettings
+    var services: NotchServices?
+
+    var body: some View {
+        if let services {
+            Card(title: "Live preview") {
+                NotchPreview(settings: settings, services: services)
+                    .frame(height: 210)
+                    .padding(.vertical, 8)
+            }
+        }
+        Card(title: "Tabs: order and which show") {
+            let enabled = settings.visibleTabs
+            let disabled = NotchTab.allCases.filter { !enabled.contains($0) }
+            ForEach(Array((enabled + disabled).enumerated()), id: \.element) { index, tab in
+                if index > 0 { Divider() }
+                let on = enabled.contains(tab)
+                HStack(spacing: 10) {
+                    Image(systemName: tab.symbol).frame(width: 20).foregroundStyle(on ? Color.accentColor : .secondary)
+                    Text(tab.title).font(.system(size: 13)).foregroundStyle(on ? .primary : .secondary)
+                    Spacer()
+                    if on {
+                        Button { settings.moveTab(tab, by: -1) } label: { Image(systemName: "chevron.up") }
+                            .buttonStyle(.borderless).disabled(enabled.first == tab)
+                        Button { settings.moveTab(tab, by: 1) } label: { Image(systemName: "chevron.down") }
+                            .buttonStyle(.borderless).disabled(enabled.last == tab)
+                    }
+                    Toggle("", isOn: Binding(get: { on }, set: { settings.setEnabled(tab, $0) }))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                        .disabled(tab == .home)
+                }
+                .padding(.vertical, 5)
+            }
+            Divider()
+            Row(title: "Opens on", detail: "The tab the notch shows when it opens.") {
+                Picker("", selection: $settings.openingTab) {
+                    Text("Where I left it").tag("last")
+                    Divider()
+                    ForEach(enabled) { Text($0.title).tag($0.rawValue) }
+                }
+                .labelsHidden().frame(width: 160)
+            }
+        }
+        Card(title: "Size and shape") {
+            Row(title: "Width", detail: "\(Int(settings.panelWidth)) pt") {
+                Slider(value: $settings.panelWidth, in: 680...900, step: 10).frame(width: 200)
+            }
+            Divider()
+            Row(title: "Extra height", detail: settings.panelExtraHeight == 0 ? "None" : "+\(Int(settings.panelExtraHeight)) pt") {
+                Slider(value: $settings.panelExtraHeight, in: 0...60, step: 5).frame(width: 200)
+            }
+            Divider()
+            Row(title: "Corner roundness", detail: "\(Int(settings.cornerRadius)) pt") {
+                Slider(value: $settings.cornerRadius, in: 12...40, step: 1).frame(width: 200)
+            }
+            Divider()
+            ToggleRow(title: "Quick-launch row", detail: "Apps and folders along the bottom.", isOn: $settings.showQuickLaunch)
+        }
+        Card(title: "Header") {
+            ToggleRow(title: "Battery", isOn: $settings.headerBattery)
+            Divider()
+            ToggleRow(title: "Clock", isOn: $settings.headerClock)
+        }
+        Card(title: "Text") {
+            Row(title: "Font") {
+                Picker("", selection: $settings.fontStyle) {
+                    ForEach(FontStyle.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 260)
+            }
+        }
+        Card(title: "Closed notch and motion") {
+            ToggleRow(title: "Swell on hover", detail: "The closed notch grows a touch under the pointer before it opens.",
+                      isOn: $settings.hoverSwell)
+            Divider()
+            Row(title: "Opens on", detail: "Hover opens after the delay; click waits for a click.") {
+                Picker("", selection: $settings.openTrigger) {
+                    ForEach(OpenTrigger.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 150)
+            }
+            Divider()
+            Row(title: "Hover delay", detail: "\(Int(settings.hoverDelay * 1000)) ms") {
+                Slider(value: $settings.hoverDelay, in: 0...0.6, step: 0.02).frame(width: 200)
+            }
+            Divider()
+            ToggleRow(title: "Bouncy animation", detail: "Overshoots and settles like a popover. Off: a smooth glide.",
+                      isOn: $settings.bouncyAnimation)
+            Divider()
+            Row(title: "Animation speed", detail: settings.animationSpeed < 0.95 ? "Snappier" : settings.animationSpeed > 1.05 ? "Slower" : "Standard") {
+                Slider(value: Binding(get: { 2.5 - settings.animationSpeed }, set: { settings.animationSpeed = 2.5 - $0 }),
+                       in: 0.5...2, step: 0.05).frame(width: 200)
+            }
+        }
+        HStack {
+            Text("Theme, colours, glass and background are in Appearance; HUD style in Media & HUD.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            Spacer()
+            Button("Reset Customisation") { settings.resetCustomisation() }
+        }
+    }
+}
+
 private struct BackgroundCard: View {
     @ObservedObject var settings: AppSettings
 
@@ -575,6 +719,36 @@ private struct ClockPane: View {
                 Stepper("\(settings.snoozeMinutes) min", value: $settings.snoozeMinutes, in: 1...30).frame(width: 120)
             }
         }
+        Card(title: "Pomodoro (Clock → Focus)") {
+            Row(title: "Work") {
+                Stepper("\(settings.pomodoroWork) min", value: $settings.pomodoroWork, in: 5...120, step: 5).frame(width: 120)
+            }
+            Divider()
+            Row(title: "Short break") {
+                Stepper("\(settings.pomodoroShortBreak) min", value: $settings.pomodoroShortBreak, in: 1...30).frame(width: 120)
+            }
+            Divider()
+            Row(title: "Long break") {
+                Stepper("\(settings.pomodoroLongBreak) min", value: $settings.pomodoroLongBreak, in: 5...60, step: 5).frame(width: 120)
+            }
+            Divider()
+            Row(title: "Rounds before a long break") {
+                Stepper("\(settings.pomodoroRounds)", value: $settings.pomodoroRounds, in: 2...8).frame(width: 120)
+            }
+            Divider()
+            ToggleRow(title: "Start the next phase by itself", detail: "Off: each phase waits for you to press Start.",
+                      isOn: $settings.pomodoroAutoStart)
+            Divider()
+            Row(title: "Sound between phases") {
+                HStack(spacing: 6) {
+                    Picker("", selection: $settings.pomodoroSound) {
+                        ForEach(AppSettings.systemSounds, id: \.self) { Text($0).tag($0) }
+                    }
+                    .labelsHidden().frame(width: 130)
+                    Button { NSSound(named: NSSound.Name(settings.pomodoroSound))?.play() } label: { Image(systemName: "play.fill") }
+                }
+            }
+        }
         Card {
             Text("Alarms ring while NotchDeck is running and your Mac is awake. A sleeping Mac can't ring.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -587,6 +761,19 @@ private struct DeskPane: View {
     @ObservedObject var settings: AppSettings
 
     var body: some View {
+        Card(title: "Colour picker (Desk → Colours)") {
+            Row(title: "Shortcut", detail: "Shows the loupe from anywhere. Click to take a colour, Esc to cancel.") {
+                Picker("", selection: $settings.colorHotKey) {
+                    ForEach([HotKeyChoice.controlOptionC, .controlOptionP, .off]) { Text($0.title).tag($0) }
+                }
+                .labelsHidden().frame(width: 110)
+            }
+            Divider()
+            ToggleRow(title: "Copy the hex code", isOn: $settings.colorCopyOnPick)
+            Divider()
+            ToggleRow(title: "Save every pick to the palette", detail: "Off: press Save in Desk → Colours for the ones you want.",
+                      isOn: $settings.colorAutoSave)
+        }
         Card(title: "Script widget") {
             Row(title: "Command", detail: "Runs in zsh from your home folder; output shows in Desk → Script.") {
                 TextField("e.g. git -C ~/code/app status -sb", text: $settings.scriptCommand)
@@ -692,11 +879,12 @@ private struct ModulesPane: View {
     static func detail(_ tab: NotchTab) -> String {
         switch tab {
         case .home: "Now playing, the time, weather and your next event. Always on."
+        case .tasks: "What you're on, what's next by deadline, overtime in the closed notch and a \u{201C}Still on it?\u{201D} nudge."
         case .widgets: "Tiles you choose: photos, clocks, world time, weather, battery, countdowns, notes and your dog."
         case .tray: "A shelf for files: drag in, drag out, AirDrop."
         case .calendar: "Today's and tomorrow's events."
-        case .clock: "Alarms, a timer and a stopwatch, all of which show in the closed notch."
-        case .desk: "Notes, your Apple Reminders, Shortcuts and a shell-command widget."
+        case .clock: "Alarms, a timer, a Pomodoro focus timer and a stopwatch, all of which show in the closed notch."
+        case .desk: "Notes, your Apple Reminders, the colour picker and palette, Shortcuts and a shell-command widget."
         case .system: "CPU, GPU, memory, disk, network speed, battery health and device batteries."
         case .clipboard: "Your recent copies, one click to copy again."
         case .mirror: "The front camera, for a quick check before calls."

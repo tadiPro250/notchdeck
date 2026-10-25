@@ -85,6 +85,7 @@ struct NotchRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.colorScheme, .dark)
         .environment(\.look, look)
+        .fontDesign(settings.fontStyle.design)
         .animation(springFor(model), value: model.presentation)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: model.hovering)
     }
@@ -92,9 +93,10 @@ struct NotchRootView: View {
     /// Opening overshoots a little and settles back, like a popover; closing tucks in quicker
     /// with a smaller bounce. Without "Bouncy animation" both are critically damped.
     private func springFor(_ model: NotchModel) -> Animation {
-        guard settings.bouncyAnimation else { return .spring(response: 0.38, dampingFraction: 1) }
-        return model.isExpanded ? .spring(response: 0.5, dampingFraction: 0.68)
-                                : .spring(response: 0.4, dampingFraction: 0.8)
+        let speed = min(max(settings.animationSpeed, 0.5), 2)
+        guard settings.bouncyAnimation else { return .spring(response: 0.38 * speed, dampingFraction: 1) }
+        return model.isExpanded ? .spring(response: 0.5 * speed, dampingFraction: 0.68)
+                                : .spring(response: 0.4 * speed, dampingFraction: 0.8)
     }
 
     @ViewBuilder
@@ -115,6 +117,17 @@ struct NotchRootView: View {
         case .timer:
             TimerActivityView(timer: services.timer, notch: notch)
                 .transition(.opacity)
+        case .pomodoro:
+            PomodoroActivityView(pomodoro: services.pomodoro, notch: notch)
+                .transition(.opacity)
+        case .overdue:
+            if let task = model.overdueTask {
+                OverdueActivityView(task: task, notch: notch)
+                    .transition(.opacity)
+            }
+        case .nudge(let task):
+            NudgeView(task: task, tasks: services.tasks, notch: notch)
+                .transition(.popIn(scale: 0.9))
         case .stopwatch:
             StopwatchActivityView(clock: services.clock, notch: notch)
                 .transition(.opacity)
@@ -319,6 +332,143 @@ struct TimerActivityView: View {
     }
 }
 
+/// Collapsed, during a Pomodoro: the phase's ring on the left, time left and the round on the right.
+struct PomodoroActivityView: View {
+    @ObservedObject var pomodoro: PomodoroTimer
+    let notch: CGSize
+
+    var body: some View {
+        let tint = pomodoro.phase.isBreak ? Color.green : Color(red: 1, green: 0.42, blue: 0.38)
+        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+            Wings(notch: notch, width: 80) {
+                ProgressRing(progress: pomodoro.progress(at: context.date), color: tint,
+                             symbol: pomodoro.isPaused ? "pause.fill" : pomodoro.phase.symbol)
+            } right: {
+                HStack(spacing: 5) {
+                    Text(FocusTimer.clock(pomodoro.remaining(at: context.date)))
+                        .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(pomodoro.isPaused ? .white.opacity(0.5) : .white)
+                    Text("\(pomodoro.round)/\(pomodoro.rounds)")
+                        .font(.system(size: 9, weight: .bold).monospacedDigit())
+                        .foregroundStyle(tint.opacity(0.85))
+                }
+            }
+        }
+    }
+}
+
+/// Collapsed, once the current task is past its deadline: a red ring, and the overtime counting up.
+struct OverdueActivityView: View {
+    let task: TaskItem
+    let notch: CGSize
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Wings(notch: notch, width: 84) {
+                TimelineView(.animation(minimumInterval: 1 / 20)) { pulse in
+                    let t = pulse.date.timeIntervalSinceReferenceDate
+                    Circle()
+                        .stroke(Color.red, lineWidth: 2.2)
+                        .frame(width: 13, height: 13)
+                        .shadow(color: .red.opacity(0.4 + 0.4 * sin(t * 3)), radius: 4)
+                }
+                .help(task.title)
+            } right: {
+                Text("+" + TaskStore.clock(context.date.timeIntervalSince(task.due ?? context.date)))
+                    .font(.system(size: 11.5, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(Color(red: 1, green: 0.35, blue: 0.35))
+            }
+        }
+    }
+}
+
+/// "Still on it?": drops down when the current task runs over, and again every few minutes.
+struct NudgeView: View {
+    let task: TaskItem
+    @ObservedObject var tasks: TaskStore
+    let notch: CGSize
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: notch.height)
+            HStack(alignment: .top, spacing: 12) {
+                TimelineView(.animation(minimumInterval: 1 / 20)) { context in
+                    let t = context.date.timeIntervalSinceReferenceDate
+                    Image(systemName: "alarm.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color(red: 1, green: 0.35, blue: 0.35))
+                        .rotationEffect(.degrees(sin(t * 24) * (sin(t * 1.5) > 0.6 ? 10 : 0)))
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(Color.red.opacity(0.16)))
+                }
+                VStack(alignment: .leading, spacing: 7) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Still on it?")
+                            .font(.system(size: 14, weight: .bold))
+                        TimelineView(.periodic(from: .now, by: 30)) { context in
+                            Text("\u{201C}\(task.title)\u{201D} is \(TaskStore.duration(context.date.timeIntervalSince(task.due ?? context.date))) over.")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.white.opacity(0.65))
+                                .lineLimit(1)
+                        }
+                    }
+                    HStack(spacing: 6) {
+                        Button("Done") { tasks.complete(task.id) }
+                            .buttonStyle(NudgeButtonStyle(hover: .green))
+                        Button("Not done") { tasks.setAside(task.id) }
+                            .buttonStyle(NudgeButtonStyle(hover: .red))
+                            .help("Stop on it for now; the next task becomes current")
+                        Button("+10 min") { tasks.extend(task.id, minutes: 10) }
+                            .buttonStyle(NudgeButtonStyle(hover: .white.opacity(0.3)))
+                    }
+                }
+                Spacer(minLength: 0)
+                Button { tasks.dismissNudge() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.white.opacity(0.08)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Ask again later")
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// Grey until hovered, then its own colour (green Done, red Not done), as in the reel.
+private struct NudgeButtonStyle: ButtonStyle {
+    let hover: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        HoverPill(label: configuration.label, hover: hover, pressed: configuration.isPressed)
+    }
+
+    private struct HoverPill<Label: View>: View {
+        let label: Label
+        let hover: Color
+        let pressed: Bool
+        @StateObject private var hovering = ViewState<Bool>(false)
+
+        var body: some View {
+            label
+                .font(.system(size: 11, weight: .semibold))
+                .padding(.horizontal, 11)
+                .frame(height: 24)
+                .background(Capsule().fill(hovering.value ? hover : Color.white.opacity(0.1)))
+                .scaleEffect(pressed ? 0.95 : 1)
+                .contentShape(Capsule())
+                .onHover { hovering.value = $0 }
+                .animation(.easeOut(duration: 0.15), value: hovering.value)
+        }
+    }
+}
+
 struct StopwatchActivityView: View {
     @ObservedObject var clock: ClockCenter
     let notch: CGSize
@@ -519,7 +669,12 @@ struct DropActivityView: View {
             Color.clear.frame(height: notch.height)
             HStack(spacing: 12) {
                 ZStack {
-                    if let progress = activity.progress {
+                    if let swatch = activity.swatch {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(Color(hex: swatch) ?? .white)
+                            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.white.opacity(0.3)))
+                            .shadow(color: (Color(hex: swatch) ?? .clear).opacity(0.6), radius: 8)
+                    } else if let progress = activity.progress {
                         Circle().stroke(activity.tint.opacity(0.25), lineWidth: 3)
                         Circle()
                             .trim(from: 0, to: progress)
@@ -528,14 +683,16 @@ struct DropActivityView: View {
                     } else {
                         Circle().fill(activity.tint.opacity(0.2))
                     }
-                    Image(systemName: activity.symbol)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(activity.tint)
+                    if activity.swatch == nil {
+                        Image(systemName: activity.symbol)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(activity.tint)
+                    }
                 }
                 .frame(width: 32, height: 32)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(activity.title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold, design: activity.swatch == nil ? .default : .monospaced))
                         .lineLimit(1)
                     if let detail = activity.detail {
                         Text(detail)

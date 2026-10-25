@@ -64,7 +64,7 @@ enum GlanceWidget: String, CaseIterable, Identifiable {
 }
 
 enum HotKeyChoice: String, CaseIterable, Identifiable {
-    case optionSpace, controlOptionSpace, commandShiftSpace, controlOptionN, off
+    case optionSpace, controlOptionSpace, commandShiftSpace, controlOptionN, controlOptionC, controlOptionP, off
     var id: String { rawValue }
 
     var title: String {
@@ -73,20 +73,46 @@ enum HotKeyChoice: String, CaseIterable, Identifiable {
         case .controlOptionSpace: "⌃⌥ Space"
         case .commandShiftSpace: "⇧⌘ Space"
         case .controlOptionN: "⌃⌥ N"
+        case .controlOptionC: "⌃⌥ C"
+        case .controlOptionP: "⌃⌥ P"
         case .off: "Off"
         }
     }
 
     /// Carbon key code and modifier mask.
     var carbon: (UInt32, UInt32)? {
-        let space: UInt32 = 49, n: UInt32 = 45
+        let space: UInt32 = 49, n: UInt32 = 45, c: UInt32 = 8, p: UInt32 = 35
         let cmd: UInt32 = 1 << 8, shift: UInt32 = 1 << 9, option: UInt32 = 1 << 11, control: UInt32 = 1 << 12
         switch self {
         case .optionSpace: return (space, option)
         case .controlOptionSpace: return (space, control | option)
         case .commandShiftSpace: return (space, cmd | shift)
         case .controlOptionN: return (n, control | option)
+        case .controlOptionC: return (c, control | option)
+        case .controlOptionP: return (p, control | option)
         case .off: return nil
+        }
+    }
+}
+
+enum FontStyle: String, CaseIterable, Identifiable {
+    case standard, rounded, serif, mono
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .standard: "System"
+        case .rounded: "Rounded"
+        case .serif: "Serif"
+        case .mono: "Mono"
+        }
+    }
+
+    var design: Font.Design {
+        switch self {
+        case .standard: .default
+        case .rounded: .rounded
+        case .serif: .serif
+        case .mono: .monospaced
         }
     }
 }
@@ -180,6 +206,36 @@ final class AppSettings: ObservableObject {
     // Clock
     @Published var alarmSound: String { didSet { save(alarmSound, "alarmSound") } }
     @Published var snoozeMinutes: Int { didSet { save(snoozeMinutes, "snoozeMinutes") } }
+
+    // Tasks
+    @Published var taskNudges: Bool { didSet { save(taskNudges, "taskNudges") } }
+    @Published var taskNudgeMinutes: Int { didSet { save(taskNudgeMinutes, "taskNudgeMinutes") } }
+    @Published var tasksInNotch: Bool { didSet { save(tasksInNotch, "tasksInNotch") } }
+
+    // Pomodoro
+    @Published var pomodoroWork: Int { didSet { save(pomodoroWork, "pomodoroWork") } }
+    @Published var pomodoroShortBreak: Int { didSet { save(pomodoroShortBreak, "pomodoroShortBreak") } }
+    @Published var pomodoroLongBreak: Int { didSet { save(pomodoroLongBreak, "pomodoroLongBreak") } }
+    @Published var pomodoroRounds: Int { didSet { save(pomodoroRounds, "pomodoroRounds") } }
+    @Published var pomodoroAutoStart: Bool { didSet { save(pomodoroAutoStart, "pomodoroAutoStart") } }
+    @Published var pomodoroSound: String { didSet { save(pomodoroSound, "pomodoroSound") } }
+
+    // Colour picker
+    @Published var colorHotKey: HotKeyChoice { didSet { save(colorHotKey.rawValue, "colorHotKey") } }
+    @Published var colorCopyOnPick: Bool { didSet { save(colorCopyOnPick, "colorCopyOnPick") } }
+    @Published var colorAutoSave: Bool { didSet { save(colorAutoSave, "colorAutoSave") } }
+
+    // Customise
+    @Published var panelWidth: Double { didSet { save(panelWidth, "panelWidth") } }
+    @Published var panelExtraHeight: Double { didSet { save(panelExtraHeight, "panelExtraHeight") } }
+    @Published var fontStyle: FontStyle { didSet { save(fontStyle.rawValue, "fontStyle") } }
+    @Published var headerBattery: Bool { didSet { save(headerBattery, "headerBattery") } }
+    @Published var headerClock: Bool { didSet { save(headerClock, "headerClock") } }
+    @Published var hoverSwell: Bool { didSet { save(hoverSwell, "hoverSwell") } }
+    /// Multiplies every open/close spring's duration: below 1 is snappier, above is lazier.
+    @Published var animationSpeed: Double { didSet { save(animationSpeed, "animationSpeed") } }
+    /// A tab's raw value, or "last" for wherever you left it.
+    @Published var openingTab: String { didSet { save(openingTab, "openingTab") } }
 
     // Desk
     @Published var scriptCommand: String { didSet { save(scriptCommand, "scriptCommand") } }
@@ -285,6 +341,30 @@ final class AppSettings: ObservableObject {
         alarmSound = value("alarmSound", "Hero")
         snoozeMinutes = value("snoozeMinutes", 9)
 
+        taskNudges = value("taskNudges", true)
+        taskNudgeMinutes = value("taskNudgeMinutes", 15)
+        tasksInNotch = value("tasksInNotch", true)
+
+        pomodoroWork = value("pomodoroWork", 25)
+        pomodoroShortBreak = value("pomodoroShortBreak", 5)
+        pomodoroLongBreak = value("pomodoroLongBreak", 15)
+        pomodoroRounds = value("pomodoroRounds", 4)
+        pomodoroAutoStart = value("pomodoroAutoStart", true)
+        pomodoroSound = value("pomodoroSound", "Glass")
+
+        colorHotKey = choice("colorHotKey", .controlOptionC)
+        colorCopyOnPick = value("colorCopyOnPick", true)
+        colorAutoSave = value("colorAutoSave", true)
+
+        panelWidth = value("panelWidth", Double(NotchModel.expandedContentSize.width))
+        panelExtraHeight = value("panelExtraHeight", 0)
+        fontStyle = choice("fontStyle", .standard)
+        headerBattery = value("headerBattery", true)
+        headerClock = value("headerClock", true)
+        hoverSwell = value("hoverSwell", true)
+        animationSpeed = value("animationSpeed", 1)
+        openingTab = value("openingTab", "last")
+
         scriptCommand = value("scriptCommand", "uptime")
         scriptInterval = value("scriptInterval", 30)
 
@@ -309,7 +389,36 @@ final class AppSettings: ObservableObject {
 
     var theme: Theme { Theme.all.first { $0.id == themeID } ?? .midnight }
 
-    var visibleTabs: [NotchTab] { NotchTab.allCases.filter(enabledTabs.contains) }
+    /// The tabs in the order you arranged them (Settings → Customise).
+    var visibleTabs: [NotchTab] {
+        var seen = Set<NotchTab>()
+        return enabledTabs.filter { seen.insert($0).inserted }
+    }
+
+    func moveTab(_ tab: NotchTab, by offset: Int) {
+        guard let index = enabledTabs.firstIndex(of: tab) else { return }
+        let target = min(max(index + offset, 0), enabledTabs.count - 1)
+        guard target != index else { return }
+        var tabs = enabledTabs
+        tabs.remove(at: index)
+        tabs.insert(tab, at: target)
+        enabledTabs = tabs
+    }
+
+    /// Everything on the Customise pane back to how it shipped.
+    func resetCustomisation() {
+        panelWidth = Double(NotchModel.expandedContentSize.width)
+        panelExtraHeight = 0
+        fontStyle = .standard
+        headerBattery = true
+        headerClock = true
+        hoverSwell = true
+        animationSpeed = 1
+        bouncyAnimation = true
+        openingTab = "last"
+        cornerRadius = 28
+        enabledTabs = NotchTab.allCases
+    }
 
     func isEnabled(_ tab: NotchTab) -> Bool { enabledTabs.contains(tab) }
 

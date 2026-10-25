@@ -45,6 +45,9 @@ struct NotchServices {
     let script: ScriptRunner
     let updates: UpdateChecker
     let cat: CatBrain
+    let tasks: TaskStore
+    let pomodoro: PomodoroTimer
+    let colors: ColorDropper
 
     static func live(settings: AppSettings) -> NotchServices {
         let player = NowPlaying()
@@ -58,7 +61,9 @@ struct NotchServices {
             camera: CameraMirror(), downloads: DownloadWatcher(), focus: FocusWatcher(), privacy: PrivacyMonitor(),
             accessories: AccessoryBatteries(), audio: AudioDevices(), displays: ExternalDisplays(),
             keyboard: KeyboardBacklight(), notes: NotesStore(), shortcuts: ShortcutsService(),
-            script: ScriptRunner(settings: settings), updates: UpdateChecker(), cat: CatBrain(settings: settings))
+            script: ScriptRunner(settings: settings), updates: UpdateChecker(), cat: CatBrain(settings: settings),
+            tasks: TaskStore(settings: settings), pomodoro: PomodoroTimer(settings: settings),
+            colors: ColorDropper(settings: settings))
     }
 }
 
@@ -70,6 +75,7 @@ final class NotchHub {
     let mediaKeys = MediaKeyInterceptor()
     let bluetooth = BluetoothWatcher()
     let hotKey = GlobalHotKey()
+    let colorHotKey = GlobalHotKey(id: 2)
     private(set) var controllers: [NotchController] = []
     private let lockScreen = LockScreenWidget()
     private var desktopCat: DesktopCat?
@@ -121,6 +127,12 @@ final class NotchHub {
 
     func expand(tab: NotchTab? = nil, sticky: Bool = false, keyboard: Bool = false) {
         focusedController?.expand(tab: tab, sticky: sticky, keyboard: keyboard)
+    }
+
+    /// Folds any open notch away (it sits above the loupe) and shows the colour loupe.
+    func pickColor() {
+        controllers.filter { $0.model.isExpanded }.forEach { $0.collapse() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self.services.colors.pick() }
     }
 
     func previewLockScreen(seconds: Double) {
@@ -211,6 +223,32 @@ final class NotchHub {
             self.showActivity(ActivityState(symbol: "dog.fill", title: "\(name) is hungry",
                                             detail: detail, tint: .orange, progress: nil), for: 5)
         }
+
+        s.tasks.isFocusing = { s.pomodoro.isRunning && s.pomodoro.phase == .work }
+        s.pomodoro.onPhaseChange = { [weak self] ended, next in
+            guard let self else { return }
+            NSSound(named: NSSound.Name(self.settings.pomodoroSound))?.play()
+            let minutes = Int(s.pomodoro.length(of: next) / 60)
+            let title = ended == .work ? (next == .longBreak ? "Long break" : "Break time") : "Back to work"
+            let detail = ended == .work
+                ? "Round \(s.pomodoro.round) done · \(minutes) min break"
+                : "Round \(s.pomodoro.round) of \(s.pomodoro.rounds) · \(minutes) min"
+            self.showActivity(ActivityState(symbol: next.symbol, title: title,
+                                            detail: self.settings.pomodoroAutoStart ? detail : detail + " · press Start",
+                                            tint: next.isBreak ? .green : Color(red: 1, green: 0.42, blue: 0.38),
+                                            progress: nil), for: 5)
+        }
+        s.colors.onPicked = { [weak self] hex, saved in
+            guard let self else { return }
+            let parts = [self.settings.colorCopyOnPick ? "Copied" : nil, saved ? "Saved to Colours" : nil,
+                         ColorDropper.formats(hex).rgb].compactMap { $0 }
+            self.showActivity(ActivityState(symbol: "eyedropper", title: hex, detail: parts.joined(separator: " · "),
+                                            tint: Color(hex: hex) ?? .white, progress: nil, swatch: hex), for: 4)
+        }
+        colorHotKey.action = { [weak self] in self?.pickColor() }
+        settings.$colorHotKey.removeDuplicates()
+            .sink { [weak self] choice in self?.colorHotKey.register(choice) }
+            .store(in: &bag)
 
         mediaKeys.handler = { [weak self] key, fine in self?.handleMediaKey(key, fineStep: fine) ?? false }
         settings.$replaceSystemHUD.removeDuplicates()
@@ -321,7 +359,7 @@ final class NotchController {
 
     var onOpenSettings: (() -> Void)?
 
-    static let windowSize = CGSize(width: 880, height: 400)
+    static let windowSize = CGSize(width: 980, height: 460)
 
     private let panel: NotchPanel
     private var monitors: [Any] = []
@@ -372,6 +410,16 @@ final class NotchController {
             self?.onOpenSettings?()
         }
         model.onRequestKeyboard = { [weak self] in self?.panel.makeKey() }
+        model.onPickColor = { [weak self] in
+            guard let self else { return }
+            self.collapse()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                self.services.colors.pick { [weak self] in
+                    self?.model.deskSection = .colors
+                    self?.expand(tab: .desk, sticky: true)
+                }
+            }
+        }
         model.onReopen = { [weak self] tab in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.expand(tab: tab, sticky: true) }
         }
@@ -396,6 +444,18 @@ final class NotchController {
             .sink { [weak self] in self?.model.timerActive = $0 }.store(in: &bag)
         s.clock.$stopwatchStart.combineLatest(s.clock.$stopwatchAccumulated).map { $0 != nil || $1 > 0 }.removeDuplicates()
             .sink { [weak self] in self?.model.stopwatchActive = $0 }.store(in: &bag)
+        s.pomodoro.$endDate.combineLatest(s.pomodoro.$pausedRemaining).map { $0 != nil || $1 != nil }.removeDuplicates()
+            .sink { [weak self] in self?.model.pomodoroActive = $0 }.store(in: &bag)
+        s.tasks.$overdue.removeDuplicates()
+            .sink { [weak self] in self?.model.overdueTask = $0 }.store(in: &bag)
+        s.tasks.$nudge.removeDuplicates()
+            .sink { [weak self] nudge in
+                guard let self else { return }
+                self.model.nudge = nudge
+                // The card has buttons, so it takes clicks while it is up.
+                self.panel.ignoresMouseEvents = self.model.ringing == nil && nudge == nil && !self.model.isExpanded
+            }
+            .store(in: &bag)
         s.downloads.$active.map { !$0.isEmpty }.removeDuplicates()
             .sink { [weak self] in self?.model.downloading = $0 }.store(in: &bag)
         s.privacy.$cameraInUse.combineLatest(s.privacy.$microphoneInUse, s.privacy.$screenRecording, s.audio.$micMuted)
@@ -408,7 +468,7 @@ final class NotchController {
                 if ringing != nil, self.model.isExpanded { self.collapse() }
                 self.model.ringing = ringing
                 // The ringing card has buttons, so it takes clicks while it is up.
-                self.panel.ignoresMouseEvents = ringing == nil && !self.model.isExpanded
+                self.panel.ignoresMouseEvents = ringing == nil && self.model.nudge == nil && !self.model.isExpanded
             }
             .store(in: &bag)
         // The model's shape depends on settings (HUD style, corner radius…): redraw when they move.
@@ -420,7 +480,11 @@ final class NotchController {
     func expand(tab: NotchTab? = nil, sticky: Bool = false, keyboard: Bool = false) {
         guard model.ringing == nil else { return }
         cancelPending()
-        if let tab { model.tab = tab }
+        if let tab {
+            model.tab = tab
+        } else if !model.isExpanded, let opening = NotchTab(rawValue: settings.openingTab), settings.isEnabled(opening) {
+            model.tab = opening
+        }
         if sticky || keyboard { stickyUntil = Date().addingTimeInterval(keyboard ? 3600 : 4) }
         let wasExpanded = model.isExpanded
         panel.ignoresMouseEvents = false
@@ -445,7 +509,7 @@ final class NotchController {
         stickyUntil = .distantPast
         model.dropTargeted = false
         model.setExpanded(false)
-        panel.ignoresMouseEvents = model.ringing == nil
+        panel.ignoresMouseEvents = model.ringing == nil && model.nudge == nil
         if panel.isKeyWindow {
             // Hand the keyboard back to whatever app was in front.
             panel.orderOut(nil)
@@ -601,7 +665,7 @@ final class NotchController {
 
     private func mouseMoved() {
         let point = NSEvent.mouseLocation
-        if model.ringing != nil { return }
+        if model.ringing != nil || model.nudge != nil { return }
         if model.isExpanded {
             if collapseZone.contains(point) || isEditingText {
                 // A keyboard-opened panel stays put; a menu-opened one switches to hover rules.

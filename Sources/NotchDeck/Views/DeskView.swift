@@ -1,13 +1,14 @@
 import SwiftUI
 
 enum DeskSection: String, CaseIterable, Identifiable {
-    case notes, todo, shortcuts, script
+    case notes, todo, colors, shortcuts, script
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .notes: "Notes"
         case .todo: "To-do"
+        case .colors: "Colours"
         case .shortcuts: "Shortcuts"
         case .script: "Script"
         }
@@ -17,6 +18,7 @@ enum DeskSection: String, CaseIterable, Identifiable {
         switch self {
         case .notes: "note.text"
         case .todo: "checklist"
+        case .colors: "eyedropper.halffull"
         case .shortcuts: "square.stack.3d.up.fill"
         case .script: "terminal.fill"
         }
@@ -25,17 +27,16 @@ enum DeskSection: String, CaseIterable, Identifiable {
 
 /// Notes, Apple Reminders, Shortcuts and a shell-command widget.
 struct DeskView: View {
-    let model: NotchModel
+    @ObservedObject var model: NotchModel
     let services: NotchServices
     @ObservedObject var settings: AppSettings
-    @StateObject private var section = ViewState<DeskSection>(.notes)
     @Environment(\.look) private var look
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             VStack(spacing: 4) {
                 ForEach(DeskSection.allCases) { item in
-                    Button { section.value = item } label: {
+                    Button { model.deskSection = item } label: {
                         HStack(spacing: 7) {
                             Image(systemName: item.symbol).frame(width: 14)
                             Text(item.title)
@@ -45,8 +46,8 @@ struct DeskView: View {
                         .padding(.horizontal, 9)
                         .frame(height: 28)
                         .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(section.value == item ? look.accent.opacity(0.2) : .clear))
-                        .foregroundStyle(section.value == item ? look.accent : .white.opacity(0.65))
+                            .fill(model.deskSection == item ? look.accent.opacity(0.2) : .clear))
+                        .foregroundStyle(model.deskSection == item ? look.accent : .white.opacity(0.65))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -56,9 +57,10 @@ struct DeskView: View {
             .frame(width: 112)
 
             Group {
-                switch section.value {
+                switch model.deskSection {
                 case .notes: NotesPane(model: model, notes: services.notes)
                 case .todo: TodoPane(model: model, reminders: services.reminders)
+                case .colors: ColoursPane(model: model, colors: services.colors)
                 case .shortcuts: ShortcutsPane(shortcuts: services.shortcuts)
                 case .script: ScriptPane(script: services.script, settings: settings)
                 }
@@ -290,5 +292,144 @@ struct DeskPlaceholder<Extra: View>: View {
         }
         .padding(.top, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The colour picker: the last colour large with its codes, and the saved palette.
+private struct ColoursPane: View {
+    let model: NotchModel
+    @ObservedObject var colors: ColorDropper
+    @StateObject private var copied = ViewState<String?>(nil)
+    @Environment(\.look) private var look
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                if let hex = colors.last {
+                    let formats = ColorDropper.formats(hex)
+                    HStack(spacing: 12) {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color(hex: hex) ?? .white)
+                            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.25)))
+                            .shadow(color: (Color(hex: hex) ?? .clear).opacity(0.5), radius: 12)
+                            .frame(width: 84, height: 84)
+                            .overlay(Text(copied.value == hex ? "Copied" : "")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(ColorDropper.ink(on: hex)))
+                        VStack(alignment: .leading, spacing: 3) {
+                            code(hex, big: true)
+                            code(formats.rgb)
+                            code(formats.hsl)
+                        }
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Pick any colour on screen").font(.system(size: 13, weight: .semibold))
+                        Text("The loupe zooms in; click to take the colour. Its hex is copied and saved here.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(look.theme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(height: 84, alignment: .leading)
+                }
+                HStack(spacing: 6) {
+                    Button { model.pickColor() } label: {
+                        Label("Pick", systemImage: "eyedropper")
+                    }
+                    .buttonStyle(AccentPillStyle())
+                    if let hex = colors.last {
+                        Button { copy(hex) } label: { Label("Copy", systemImage: "doc.on.doc") }
+                            .buttonStyle(PillButtonStyle())
+                        if !colors.isSaved {
+                            Button { colors.save(hex) } label: { Label("Save", systemImage: "plus") }
+                                .buttonStyle(PillButtonStyle())
+                        }
+                    }
+                }
+                Text("Anywhere: \(AppSettings.shared.colorHotKey.title)")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.white.opacity(0.35))
+            }
+            .frame(width: 250, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("SAVED").font(.system(size: 9.5, weight: .bold)).foregroundStyle(.white.opacity(0.55))
+                    Spacer()
+                    if !colors.saved.isEmpty {
+                        Button("Clear") { colors.clear() }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.45))
+                    }
+                }
+                if colors.saved.isEmpty {
+                    Text("Colours you pick land here.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(look.theme.secondaryText)
+                } else {
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 30, maximum: 34), spacing: 7)], spacing: 7) {
+                            ForEach(colors.saved) { saved in
+                                SwatchChip(saved: saved, selected: saved.hex == colors.last) {
+                                    colors.select(saved.hex)
+                                    flash(saved.hex)
+                                }
+                                .contextMenu {
+                                    Button("Copy \(saved.hex)") { copy(saved.hex) }
+                                    Button("Copy \(ColorDropper.formats(saved.hex).rgb)") { ColorDropper.copy(ColorDropper.formats(saved.hex).rgb) }
+                                    Button("Remove", role: .destructive) { colors.remove(saved) }
+                                }
+                            }
+                        }
+                        .padding(3)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func code(_ text: String, big: Bool = false) -> some View {
+        Button { copy(text) } label: {
+            Text(text)
+                .font(.system(size: big ? 18 : 10.5, weight: big ? .bold : .medium, design: .monospaced))
+                .foregroundStyle(.white.opacity(big ? 1 : 0.6))
+        }
+        .buttonStyle(.plain)
+        .help("Copy")
+    }
+
+    private func copy(_ text: String) {
+        ColorDropper.copy(text)
+        flash(colors.last ?? text)
+    }
+
+    private func flash(_ hex: String) {
+        copied.value = hex
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { if copied.value == hex { copied.value = nil } }
+    }
+}
+
+private struct SwatchChip: View {
+    let saved: SavedColor
+    let selected: Bool
+    let action: () -> Void
+    @StateObject private var hovering = ViewState<Bool>(false)
+
+    var body: some View {
+        Button(action: action) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(saved.color)
+                .frame(width: 30, height: 30)
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(selected ? Color.white : Color.white.opacity(0.18), lineWidth: selected ? 2 : 0.8))
+                .scaleEffect(hovering.value ? 1.12 : 1)
+                .shadow(color: saved.color.opacity(hovering.value ? 0.6 : 0), radius: 6)
+        }
+        .buttonStyle(.plain)
+        .help(saved.hex)
+        .onHover { hovering.value = $0 }
+        .animation(.spring(response: 0.25, dampingFraction: 0.65), value: hovering.value)
     }
 }

@@ -6,20 +6,30 @@ import SwiftUI
 final class GlobalHotKey {
     var action: (() -> Void)?
 
+    private let id: UInt32
     private var reference: EventHotKeyRef?
     private var handler: EventHandlerRef?
+
+    /// Each shortcut needs its own `id`: every handler sees every hot key, and keeps only its own.
+    init(id: UInt32 = 1) {
+        self.id = id
+    }
 
     func register(_ choice: HotKeyChoice) {
         unregister()
         guard let (keyCode, modifiers) = choice.carbon else { return }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
-            guard let context else { return noErr }
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
+            guard let context, let event else { return OSStatus(eventNotHandledErr) }
             let me = Unmanaged<GlobalHotKey>.fromOpaque(context).takeUnretainedValue()
+            var pressed = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &pressed)
+            guard pressed.id == me.id else { return OSStatus(eventNotHandledErr) }
             DispatchQueue.main.async { me.action?() }
             return noErr
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handler)
-        RegisterEventHotKey(keyCode, modifiers, EventHotKeyID(signature: OSType(0x4E44_4B31), id: 1),
+        RegisterEventHotKey(keyCode, modifiers, EventHotKeyID(signature: OSType(0x4E44_4B31), id: id),
                             GetApplicationEventTarget(), 0, &reference)
     }
 
