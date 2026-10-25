@@ -6,6 +6,10 @@ enum Main {
     static let delegate = AppDelegate()
 
     static func main() {
+        if CommandLine.arguments.contains("--test-hover") {
+            HoverIntent.selfTest()
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--render-previews") {
             let dir = CommandLine.arguments.count > i + 1 ? CommandLine.arguments[i + 1] : "previews"
             Previews.render(to: URL(fileURLWithPath: dir))

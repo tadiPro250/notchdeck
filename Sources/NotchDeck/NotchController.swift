@@ -364,7 +364,6 @@ final class NotchController {
     private let panel: NotchPanel
     private var monitors: [Any] = []
     private var bag = Set<AnyCancellable>()
-    private var expandWork: DispatchWorkItem?
     private var collapseWork: DispatchWorkItem?
     private var dragPoll: Timer?
     private var dragChangeCount = 0
@@ -374,8 +373,12 @@ final class NotchController {
     private var expandedWatch: Timer?
     private var swipeAccumulator: CGFloat = 0
     private var swipeLocked = false
-    /// The last pointer sample, for its speed: a pointer racing past isn't asking to open.
-    private var lastSample: (point: CGPoint, time: Date)?
+    private var dwellTimer: Timer?
+    private var dwellStart = Date()
+    private var dwellSamples: [(time: Date, point: CGPoint)] = []
+    /// Set when the notch closes with the pointer still on it: it has to leave before hover
+    /// can open the notch again, so it never flickers open and shut.
+    private var awaitingExit = false
     /// True once you've used the open panel (clicked, scrolled, typed, or lingered in it).
     /// Until then leaving it closes it at once, so an accidental hover costs nothing.
     private var engaged = false
@@ -511,13 +514,20 @@ final class NotchController {
         log.info("expanded on \(self.model.tab.rawValue, privacy: .public)")
         // Belt and braces: if mouse events go missing, still fold away once the pointer has left.
         expandedWatch?.invalidate()
-        expandedWatch = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.mouseMoved() }
+        // Checks the pointer often enough that leaving the panel closes it straight away, even
+        // when global mouse events are slow to arrive.
+        let watch = Timer(timeInterval: 1 / 30, repeats: true) { [weak self] _ in self?.mouseMoved() }
+        RunLoop.main.add(watch, forMode: .common)
+        expandedWatch = watch
+        stopDwell()
     }
 
     func collapse() {
         cancelPending()
+        stopDwell()
         stickyUntil = .distantPast
         engaged = false
+        awaitingExit = triggerZone().contains(NSEvent.mouseLocation)
         model.dropTargeted = false
         model.setExpanded(false)
         panel.ignoresMouseEvents = model.ringing == nil && model.nudge == nil
@@ -532,8 +542,6 @@ final class NotchController {
     }
 
     private func cancelPending() {
-        expandWork?.cancel()
-        expandWork = nil
         collapseWork?.cancel()
         collapseWork = nil
     }
@@ -669,9 +677,18 @@ final class NotchController {
         dragPoll = timer
     }
 
-    private func hotZone() -> CGRect {
-        externalDrag ? model.screenRect.insetBy(dx: -60, dy: -40) : model.screenRect.insetBy(dx: -2, dy: -2)
+    /// What opens the notch on hover: the notch itself and a few points either side, not the
+    /// album-art wings or the hover swell. While a file is dragged, a generous area around it.
+    private func triggerZone() -> CGRect {
+        let geometry = model.geometry
+        let frame = geometry.screenFrame
+        if externalDrag { return model.screenRect.insetBy(dx: -60, dy: -40) }
+        let width = geometry.notchSize.width + 2 * Self.sideMargin
+        let height = geometry.notchSize.height + geometry.islandGap + 2
+        return CGRect(x: frame.midX - width / 2, y: frame.maxY - height, width: width, height: height + 1)
     }
+
+    private static let sideMargin: CGFloat = 6
 
     /// The open panel plus a small grace margin once you're using it, so overshooting an edge
     /// doesn't close it. Before that, just the panel itself.
@@ -681,22 +698,12 @@ final class NotchController {
         return CGRect(x: rect.minX, y: rect.minY - 20, width: rect.width, height: rect.height + 20)
     }
 
-    /// Faster than this (points per second) and the pointer is passing by, not hovering.
-    private static let passingSpeed: CGFloat = 650
-
     private func mouseMoved() {
         let point = NSEvent.mouseLocation
-        let now = Date()
-        var speed: CGFloat = 0
-        if let last = lastSample {
-            let dt = now.timeIntervalSince(last.time)
-            if dt > 0.001 { speed = hypot(point.x - last.point.x, point.y - last.point.y) / CGFloat(dt) }
-        }
-        lastSample = (point, now)
         if model.ringing != nil || model.nudge != nil { return }
         if model.isExpanded {
             // Lingering in the panel counts as using it.
-            if !engaged, model.screenRect.contains(point), now.timeIntervalSince(openedAt) > 0.7 { engaged = true }
+            if !engaged, model.screenRect.contains(point), Date().timeIntervalSince(openedAt) > 0.7 { engaged = true }
             if collapseZone.contains(point) || isEditingText {
                 // A keyboard-opened panel stays put; a menu-opened one switches to hover rules.
                 if stickyUntil < Date().addingTimeInterval(60) { stickyUntil = .distantPast }
@@ -707,29 +714,59 @@ final class NotchController {
             }
             return
         }
-        let over = model.screenRect.insetBy(dx: -2, dy: -2).contains(point)
-        if over != model.hovering { model.hovering = over }
+        let inZone = triggerZone().contains(point)
+        if inZone != model.hovering { model.hovering = inZone }
+        // After it closes, the pointer must leave before hovering can open it again.
+        if awaitingExit {
+            if !inZone { awaitingExit = false }
+            return
+        }
         // In click mode only a drag opens the notch by itself.
         guard settings.openTrigger == .hover || externalDrag else { return }
-        if hotZone().contains(point) {
-            // Still moving fast: start the wait over, so only a pointer that settles opens it.
-            if speed > Self.passingSpeed, !externalDrag {
-                expandWork?.cancel()
-                expandWork = nil
+        if inZone {
+            if externalDrag {
+                expand(tab: .tray)
+            } else {
+                startDwell()
             }
-            guard expandWork == nil else { return }
-            let forDrop = externalDrag
-            let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.expandWork = nil
-                if self.hotZone().contains(NSEvent.mouseLocation) { self.expand(tab: forDrop ? .tray : nil) }
-            }
-            expandWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + (forDrop ? 0 : max(settings.hoverDelay, 0.15)), execute: work)
         } else {
-            expandWork?.cancel()
-            expandWork = nil
+            stopDwell()
         }
+    }
+
+    // MARK: Hover intent
+
+    /// Samples the pointer 30 times a second while it's over the notch. It opens once the pointer
+    /// has been there for the delay and has barely moved lately: a pointer that's crossing, or
+    /// sliding along the top edge, never counts, however slowly it goes.
+    private func startDwell() {
+        guard dwellTimer == nil else { return }
+        dwellStart = Date()
+        dwellSamples = [(Date(), NSEvent.mouseLocation)]
+        let timer = Timer(timeInterval: 1 / 30, repeats: true) { [weak self] _ in self?.dwellTick() }
+        RunLoop.main.add(timer, forMode: .common)
+        dwellTimer = timer
+    }
+
+    private func stopDwell() {
+        dwellTimer?.invalidate()
+        dwellTimer = nil
+        dwellSamples = []
+    }
+
+    private func dwellTick() {
+        let now = Date()
+        let point = NSEvent.mouseLocation
+        guard !model.isExpanded, triggerZone().contains(point), model.ringing == nil, model.nudge == nil else {
+            stopDwell()
+            return
+        }
+        dwellSamples.append((now, point))
+        dwellSamples.removeAll { now.timeIntervalSince($0.time) > 0.3 }
+        guard HoverIntent.isResting(samples: dwellSamples, since: dwellStart, now: now,
+                                    delay: settings.hoverDelay, sensitivity: settings.hoverSensitivity) else { return }
+        stopDwell()
+        expand()
     }
 
     private func scheduleCollapse() {
@@ -746,6 +783,58 @@ final class NotchController {
         collapseWork = work
         // Gone almost at once after an accidental hover; a moment's grace once you've used it.
         DispatchQueue.main.asyncAfter(deadline: .now() + (engaged ? 0.22 : 0.06), execute: work)
+    }
+}
+
+/// Decides whether a pointer over the notch is resting there (open) or just passing (don't).
+enum HoverIntent {
+    static func isResting(samples: [(time: Date, point: CGPoint)], since start: Date, now: Date,
+                          delay: Double, sensitivity: HoverSensitivity) -> Bool {
+        guard now.timeIntervalSince(start) >= max(delay, 0.08) else { return false }
+        // How far it has drifted over the last moment.
+        let recent = samples.filter { now.timeIntervalSince($0.time) <= sensitivity.stillWindow }
+        guard !recent.isEmpty else { return false }
+        let xs = recent.map(\.point.x), ys = recent.map(\.point.y)
+        let drift = hypot((xs.max() ?? 0) - (xs.min() ?? 0), (ys.max() ?? 0) - (ys.min() ?? 0))
+        return drift <= sensitivity.stillTolerance
+    }
+
+    /// `--test-hover`: plays pointer paths at 30 samples a second through the rule and prints
+    /// what would happen, for each sensitivity.
+    static func selfTest() {
+        let notchWidth: CGFloat = 179 + 12
+        func path(_ seconds: Double, _ at: (Double) -> CGPoint) -> [(Double, CGPoint)] {
+            stride(from: 0.0, through: seconds, by: 1 / 30).map { ($0, at($0)) }
+        }
+        // Whether each path should open the notch; a slow creep counts as a hover only on Quick.
+        let scenarios: [(String, (HoverSensitivity) -> Bool, [(Double, CGPoint)])] = [
+            ("rests on the notch", { _ in true }, path(1, { _ in CGPoint(x: 90, y: 10) })),
+            ("hand tremor (±2 pt) while resting", { _ in true }, path(1, { t in CGPoint(x: 90 + 2 * sin(t * 40), y: 10 + 2 * cos(t * 33)) })),
+            ("crosses the notch at 300 pt/s", { _ in false }, path(notchWidth / 300, { t in CGPoint(x: t * 300, y: 10) })),
+            ("slides along the top edge at 120 pt/s", { _ in false }, path(notchWidth / 120, { t in CGPoint(x: t * 120, y: 2) })),
+            ("creeps across at 60 pt/s", { $0 == .quick }, path(notchWidth / 60, { t in CGPoint(x: t * 60, y: 8) })),
+            ("touches it for 0.1 s and leaves", { _ in false }, path(0.1, { _ in CGPoint(x: 90, y: 10) })),
+            ("slows down and stops on it", { _ in true }, path(1, { t in CGPoint(x: t < 0.4 ? t * 200 : 80, y: 10) })),
+        ]
+        for sensitivity in HoverSensitivity.allCases {
+            print("\n\(sensitivity.title) (delay \(Int(sensitivity.delay * 1000)) ms):")
+            for (name, expected, points) in scenarios {
+                let start = Date()
+                var samples: [(time: Date, point: CGPoint)] = []
+                var opened: Double?
+                for (t, point) in points {
+                    let now = start.addingTimeInterval(t)
+                    samples.append((now, point))
+                    samples.removeAll { now.timeIntervalSince($0.time) > 0.3 }
+                    if isResting(samples: samples, since: start, now: now, delay: sensitivity.delay, sensitivity: sensitivity) {
+                        opened = t
+                        break
+                    }
+                }
+                let verdict = opened.map { "opens at \(Int($0 * 1000)) ms" } ?? "stays closed"
+                print("  \((opened != nil) == expected(sensitivity) ? "ok  " : "FAIL") \(name): \(verdict)")
+            }
+        }
     }
 }
 

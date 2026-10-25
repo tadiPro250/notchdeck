@@ -117,6 +117,54 @@ enum FontStyle: String, CaseIterable, Identifiable {
     }
 }
 
+/// How deliberate a hover has to be before the notch opens.
+enum HoverSensitivity: String, CaseIterable, Identifiable {
+    case quick, balanced, deliberate
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .quick: "Quick"
+        case .balanced: "Balanced"
+        case .deliberate: "Deliberate"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .quick: "Opens almost as soon as the pointer arrives, even if it's still moving a little."
+        case .balanced: "Opens when the pointer rests on the notch for a quarter of a second."
+        case .deliberate: "Opens only when the pointer stays put on the notch for about half a second."
+        }
+    }
+
+    /// The hover delay it sets.
+    var delay: Double {
+        switch self {
+        case .quick: 0.12
+        case .balanced: 0.25
+        case .deliberate: 0.45
+        }
+    }
+
+    /// Most the pointer may drift, in points, over `stillWindow` seconds and still count as resting.
+    /// (So the speed it allows is tolerance ÷ window: about 83, 40 and 24 pt/s; 6 pt leaves room
+    /// for the tremor of a resting hand.)
+    var stillTolerance: CGFloat {
+        switch self {
+        case .quick: 10
+        case .balanced, .deliberate: 6
+        }
+    }
+
+    var stillWindow: TimeInterval {
+        switch self {
+        case .quick: 0.12
+        case .balanced: 0.15
+        case .deliberate: 0.25
+        }
+    }
+}
+
 enum DisplayMode: String, CaseIterable, Identifiable {
     case notched, main, all
     var id: String { rawValue }
@@ -138,6 +186,12 @@ final class AppSettings: ObservableObject {
     // General
     @Published var openTrigger: OpenTrigger { didSet { save(openTrigger.rawValue, "openTrigger") } }
     @Published var hoverDelay: Double { didSet { save(hoverDelay, "hoverDelay") } }
+    @Published var hoverSensitivity: HoverSensitivity {
+        didSet {
+            save(hoverSensitivity.rawValue, "hoverSensitivity")
+            hoverDelay = hoverSensitivity.delay
+        }
+    }
     @Published var haptics: Bool { didSet { save(haptics, "haptics") } }
     @Published var swipeBetweenTabs: Bool { didSet { save(swipeBetweenTabs, "swipeBetweenTabs") } }
     @Published var enabledTabs: [NotchTab] { didSet { save(enabledTabs.map(\.rawValue), "enabledTabs") } }
@@ -266,7 +320,10 @@ final class AppSettings: ObservableObject {
         }
 
         openTrigger = choice("openTrigger", .hover)
-        hoverDelay = value("hoverDelay", 0.12)
+        // 0.12 s was the old default; with the steadiness check, a quarter second feels right.
+        let storedDelay: Double = value("hoverDelay", 0.25)
+        hoverDelay = storedDelay == 0.12 && d.object(forKey: "hoverSensitivity") == nil ? 0.25 : storedDelay
+        hoverSensitivity = choice("hoverSensitivity", .balanced)
         haptics = value("haptics", true)
         swipeBetweenTabs = value("swipeBetweenTabs", true)
         // Tabs added in a later version start switched on.
@@ -415,6 +472,7 @@ final class AppSettings: ObservableObject {
         headerBattery = true
         headerClock = true
         hoverSwell = true
+        hoverSensitivity = .balanced
         animationSpeed = 1
         bouncyAnimation = true
         openingTab = "last"

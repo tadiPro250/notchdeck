@@ -237,8 +237,16 @@ private struct GeneralPane: View {
                 .pickerStyle(.segmented).labelsHidden().frame(width: 150)
             }
             Divider()
-            Row(title: "Hover delay", detail: "\(Int(settings.hoverDelay * 1000)) ms before the notch opens") {
-                Slider(value: $settings.hoverDelay, in: 0...0.6, step: 0.02).frame(width: 180)
+            Row(title: "Hover sensitivity", detail: settings.hoverSensitivity.detail) {
+                Picker("", selection: $settings.hoverSensitivity) {
+                    ForEach(HoverSensitivity.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 250)
+            }
+            .opacity(settings.openTrigger == .hover ? 1 : 0.4)
+            Divider()
+            Row(title: "Hover delay", detail: "\(Int(settings.hoverDelay * 1000)) ms of resting before the notch opens") {
+                Slider(value: $settings.hoverDelay, in: 0.08...0.8, step: 0.02).frame(width: 180)
             }
             .opacity(settings.openTrigger == .hover ? 1 : 0.4)
             Divider()
@@ -507,8 +515,15 @@ private struct CustomisePane: View {
                 .pickerStyle(.segmented).labelsHidden().frame(width: 150)
             }
             Divider()
-            Row(title: "Hover delay", detail: "\(Int(settings.hoverDelay * 1000)) ms") {
-                Slider(value: $settings.hoverDelay, in: 0...0.6, step: 0.02).frame(width: 200)
+            Row(title: "Hover sensitivity", detail: settings.hoverSensitivity.detail) {
+                Picker("", selection: $settings.hoverSensitivity) {
+                    ForEach(HoverSensitivity.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 250)
+            }
+            Divider()
+            Row(title: "Hover delay", detail: "\(Int(settings.hoverDelay * 1000)) ms of resting") {
+                Slider(value: $settings.hoverDelay, in: 0.08...0.8, step: 0.02).frame(width: 200)
             }
             Divider()
             ToggleRow(title: "Bouncy animation", detail: "Overshoots and settles like a popover. Off: a smooth glide.",
