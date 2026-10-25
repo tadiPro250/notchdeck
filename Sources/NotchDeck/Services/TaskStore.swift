@@ -282,7 +282,9 @@ final class TaskStore: ObservableObject {
     }
 
     private static var idleSeconds: TimeInterval {
-        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+        // ~0 is kCGAnyInputEventType; if it ever stops being accepted, mouse moves are a fair stand-in.
+        let anyInput = CGEventType(rawValue: ~0) ?? .mouseMoved
+        return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput)
     }
 
     static func dayKey(_ date: Date) -> String {
