@@ -105,6 +105,15 @@ enum Previews {
             $0.deskSection = .colors
         }
 
+        let pickerModel = NotchModel(geometry: notched, settings: settings)
+        let picker = DeadlinePicker(model: pickerModel, current: Date().addingTimeInterval(3 * 86400 + 4 * 3600 + 30 * 60)) { _ in }
+            .padding(12)
+            .frame(width: 300)
+            .background(Color(white: 0.12))
+            .environment(\.colorScheme, .dark)
+            .foregroundStyle(.white)
+        save(picker, name: "e8-deadline-picker", size: CGSize(width: 300, height: 240), to: directory)
+
         // Lock screen, playing and paused.
         for playing in [true, false] {
             if !playing {

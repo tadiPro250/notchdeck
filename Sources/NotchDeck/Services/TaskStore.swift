@@ -311,17 +311,25 @@ final class TaskStore: ObservableObject {
 
     // MARK: Text
 
-    /// "1:18:34" for overtime and countdowns.
+    /// "1:18:34" for overtime and countdowns; "2d 3:04:05" past a day.
     static func clock(_ seconds: TimeInterval) -> String {
         let total = max(Int(seconds), 0)
+        if total >= 86400 {
+            let rest = total % 86400
+            return String(format: "%dd %d:%02d:%02d", total / 86400, rest / 3600, rest / 60 % 60, rest % 60)
+        }
         if total >= 3600 { return String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60) }
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
-    /// "6h 22m", "41m", "2h".
+    /// "6h 22m", "41m", "2h", "3d 4h".
     static func duration(_ seconds: TimeInterval) -> String {
         let minutes = Int(seconds / 60)
         if minutes < 60 { return "\(max(minutes, 0))m" }
+        if minutes >= 1440 {
+            let days = minutes / 1440, hours = minutes / 60 % 24
+            return hours == 0 ? "\(days)d" : "\(days)d \(hours)h"
+        }
         return minutes % 60 == 0 ? "\(minutes / 60)h" : "\(minutes / 60)h \(minutes % 60)m"
     }
 

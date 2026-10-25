@@ -262,11 +262,13 @@ private struct TimerColumn: View {
 
 /// A picker drum: the value large in the middle, its neighbours fading above and below. Scroll
 /// it with the trackpad or a mouse wheel; the closure says whether ⌥ or ⌃ was held.
-private struct DrumWheel: View {
+struct DrumWheel: View {
     @Binding var value: Int
     let range: ClosedRange<Int>
     let unit: String
-    let seconds: Bool
+    var seconds = false
+    /// Tooltip; the timer's own wording when nil.
+    var help: String?
     let onStep: (Int, Bool) -> Void
     @StateObject private var hovering = ViewState<Bool>(false)
     @Environment(\.look) private var look
@@ -298,7 +300,7 @@ private struct DrumWheel: View {
         .overlay(ScrollCatcher { delta, alternate in onStep(delta, alternate) })
         .onHover { hovering.value = $0 }
         .animation(.spring(response: 0.25, dampingFraction: 0.85), value: value)
-        .help(seconds ? "Scroll to set seconds" : "Scroll to set minutes; hold ⌥ or ⌃ for seconds")
+        .help(help ?? (seconds ? "Scroll to set seconds" : "Scroll to set minutes; hold ⌥ or ⌃ for seconds"))
     }
 
     private func neighbour(_ n: Int, opacity: Double) -> some View {
