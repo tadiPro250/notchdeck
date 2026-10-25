@@ -183,14 +183,18 @@ private struct NewAlarmForm: View {
 
 private struct TimerColumn: View {
     @ObservedObject var timer: FocusTimer
+    @StateObject private var hours = ViewState<Int>(0)
     @StateObject private var minutes = ViewState<Int>(10)
     @StateObject private var seconds = ViewState<Int>(0)
     @Environment(\.look) private var look
 
+    private static let limit = 23 * 3600 + 59 * 60 + 59
+    private var total: Int { hours.value * 3600 + minutes.value * 60 + seconds.value }
+
     var body: some View {
         VStack(spacing: 7) {
             if !timer.isActive {
-                Text("Scroll to set · ⌥ scroll for seconds")
+                Text("Scroll each drum · ⌥ scroll = seconds")
                     .foregroundStyle(.white.opacity(0.35)).font(.system(size: 9, weight: .medium))
             }
             if timer.isActive {
@@ -203,7 +207,8 @@ private struct TimerColumn: View {
                             .rotationEffect(.degrees(-90))
                             .shadow(color: look.accent.opacity(0.5), radius: 6)
                         Text(FocusTimer.clock(timer.remaining(at: context.date)))
-                            .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
+                            .font(.system(size: timer.remaining(at: context.date) >= 3600 ? 17 : 20,
+                                          weight: .semibold, design: .rounded).monospacedDigit())
                             .contentTransition(.numericText(countsDown: true))
                     }
                     .frame(width: 104, height: 104)
@@ -214,49 +219,56 @@ private struct TimerColumn: View {
                     Button("Stop") { timer.cancel() }.buttonStyle(PillButtonStyle())
                 }
             } else {
-                HStack(spacing: 2) {
-                    DrumWheel(value: $minutes.value, range: 0...180, unit: "min", seconds: false) { delta, alternate in
-                        if alternate { step(seconds: delta) } else { step(minutes: delta) }
+                HStack(spacing: 1) {
+                    DrumWheel(value: $hours.value, range: 0...23, unit: "hr", help: "Scroll to set hours",
+                              width: 50, size: 25) { delta, alternate in
+                        step(by: alternate ? delta : delta * 3600)
                     }
-                    Text(":")
-                        .font(.system(size: 26, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .offset(y: -6)
-                    DrumWheel(value: $seconds.value, range: 0...59, unit: "sec", seconds: true) { delta, _ in
-                        step(seconds: delta)
+                    colon
+                    DrumWheel(value: $minutes.value, range: 0...59, unit: "min", width: 50, size: 25) { delta, alternate in
+                        step(by: alternate ? delta : delta * 60)
+                    }
+                    colon
+                    DrumWheel(value: $seconds.value, range: 0...59, unit: "sec", seconds: true, width: 50, size: 25) { delta, _ in
+                        step(by: delta)
                     }
                 }
                 .frame(height: 104)
                 HStack(spacing: 4) {
-                    ForEach([1, 5, 10, 25], id: \.self) { preset in
-                        Button("\(preset)m") {
-                            minutes.value = preset
-                            seconds.value = 0
-                        }
-                        .buttonStyle(ChipStyle(selected: minutes.value == preset && seconds.value == 0))
+                    ForEach([(60, "1m"), (300, "5m"), (1500, "25m"), (3600, "1h")], id: \.1) { preset in
+                        Button(preset.1) { set(preset.0) }
+                            .buttonStyle(ChipStyle(selected: total == preset.0))
                     }
                 }
                 Button {
-                    timer.start(minutes: Double(minutes.value) + Double(seconds.value) / 60)
+                    timer.start(minutes: Double(total) / 60)
                 } label: {
                     Label("Start", systemImage: "play.fill").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(AccentPillStyle())
-                .disabled(minutes.value == 0 && seconds.value == 0)
+                .disabled(total == 0)
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: timer.isActive)
     }
 
-    private func step(minutes delta: Int) {
-        minutes.value = min(max(minutes.value + delta, 0), 180)
+    private var colon: some View {
+        Text(":")
+            .font(.system(size: 21, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white.opacity(0.5))
+            .offset(y: -6)
     }
 
-    /// Seconds wrap into minutes, so scrolling past 59 carries over.
-    private func step(seconds delta: Int) {
-        let total = min(max(minutes.value * 60 + seconds.value + delta, 0), 180 * 60)
-        minutes.value = total / 60
-        seconds.value = total % 60
+    /// Every drum moves the same total, so 59 s + 1 rolls into the next minute and so on.
+    private func step(by delta: Int) {
+        set(total + delta)
+    }
+
+    private func set(_ seconds: Int) {
+        let clamped = min(max(seconds, 0), Self.limit)
+        hours.value = clamped / 3600
+        minutes.value = clamped / 60 % 60
+        self.seconds.value = clamped % 60
     }
 }
 
@@ -269,6 +281,9 @@ struct DrumWheel: View {
     var seconds = false
     /// Tooltip; the timer's own wording when nil.
     var help: String?
+    var width: CGFloat = 62
+    /// Point size of the middle number.
+    var size: CGFloat = 30
     let onStep: (Int, Bool) -> Void
     @StateObject private var hovering = ViewState<Bool>(false)
     @Environment(\.look) private var look
@@ -278,7 +293,7 @@ struct DrumWheel: View {
             neighbour(value - 2, opacity: 0.12)
             neighbour(value - 1, opacity: 0.32)
             Text(format(value))
-                .font(.system(size: 30, weight: .semibold, design: .rounded).monospacedDigit())
+                .font(.system(size: size, weight: .semibold, design: .rounded).monospacedDigit())
                 .foregroundStyle(.white)
                 .contentTransition(.numericText(value: Double(value)))
                 .frame(height: 36)
@@ -289,7 +304,7 @@ struct DrumWheel: View {
                 .foregroundStyle(hovering.value ? look.accent : .white.opacity(0.35))
                 .padding(.top, 1)
         }
-        .frame(width: 62)
+        .frame(width: width)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(Color.white.opacity(hovering.value ? 0.1 : 0.05))
             .frame(height: 38)
