@@ -45,6 +45,9 @@ struct NotchServices {
     let script: ScriptRunner
     let updates: UpdateChecker
     let cat: CatBrain
+    let tasks: TaskStore
+    let pomodoro: PomodoroTimer
+    let colors: ColorDropper
 
     static func live(settings: AppSettings) -> NotchServices {
         let player = NowPlaying()
@@ -58,7 +61,9 @@ struct NotchServices {
             camera: CameraMirror(), downloads: DownloadWatcher(), focus: FocusWatcher(), privacy: PrivacyMonitor(),
             accessories: AccessoryBatteries(), audio: AudioDevices(), displays: ExternalDisplays(),
             keyboard: KeyboardBacklight(), notes: NotesStore(), shortcuts: ShortcutsService(),
-            script: ScriptRunner(settings: settings), updates: UpdateChecker(), cat: CatBrain(settings: settings))
+            script: ScriptRunner(settings: settings), updates: UpdateChecker(), cat: CatBrain(settings: settings),
+            tasks: TaskStore(settings: settings), pomodoro: PomodoroTimer(settings: settings),
+            colors: ColorDropper(settings: settings))
     }
 }
 
@@ -70,6 +75,7 @@ final class NotchHub {
     let mediaKeys = MediaKeyInterceptor()
     let bluetooth = BluetoothWatcher()
     let hotKey = GlobalHotKey()
+    let colorHotKey = GlobalHotKey(id: 2)
     private(set) var controllers: [NotchController] = []
     private let lockScreen = LockScreenWidget()
     private var desktopCat: DesktopCat?
@@ -121,6 +127,12 @@ final class NotchHub {
 
     func expand(tab: NotchTab? = nil, sticky: Bool = false, keyboard: Bool = false) {
         focusedController?.expand(tab: tab, sticky: sticky, keyboard: keyboard)
+    }
+
+    /// Folds any open notch away (it sits above the loupe) and shows the colour loupe.
+    func pickColor() {
+        controllers.filter { $0.model.isExpanded }.forEach { $0.collapse() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self.services.colors.pick() }
     }
 
     func previewLockScreen(seconds: Double) {
@@ -211,6 +223,32 @@ final class NotchHub {
             self.showActivity(ActivityState(symbol: "dog.fill", title: "\(name) is hungry",
                                             detail: detail, tint: .orange, progress: nil), for: 5)
         }
+
+        s.tasks.isFocusing = { s.pomodoro.isRunning && s.pomodoro.phase == .work }
+        s.pomodoro.onPhaseChange = { [weak self] ended, next in
+            guard let self else { return }
+            NSSound(named: NSSound.Name(self.settings.pomodoroSound))?.play()
+            let minutes = Int(s.pomodoro.length(of: next) / 60)
+            let title = ended == .work ? (next == .longBreak ? "Long break" : "Break time") : "Back to work"
+            let detail = ended == .work
+                ? "Round \(s.pomodoro.round) done · \(minutes) min break"
+                : "Round \(s.pomodoro.round) of \(s.pomodoro.rounds) · \(minutes) min"
+            self.showActivity(ActivityState(symbol: next.symbol, title: title,
+                                            detail: self.settings.pomodoroAutoStart ? detail : detail + " · press Start",
+                                            tint: next.isBreak ? .green : Color(red: 1, green: 0.42, blue: 0.38),
+                                            progress: nil), for: 5)
+        }
+        s.colors.onPicked = { [weak self] hex, saved in
+            guard let self else { return }
+            let parts = [self.settings.colorCopyOnPick ? "Copied" : nil, saved ? "Saved to Colours" : nil,
+                         ColorDropper.formats(hex).rgb].compactMap { $0 }
+            self.showActivity(ActivityState(symbol: "eyedropper", title: hex, detail: parts.joined(separator: " · "),
+                                            tint: Color(hex: hex) ?? .white, progress: nil, swatch: hex), for: 4)
+        }
+        colorHotKey.action = { [weak self] in self?.pickColor() }
+        settings.$colorHotKey.removeDuplicates()
+            .sink { [weak self] choice in self?.colorHotKey.register(choice) }
+            .store(in: &bag)
 
         mediaKeys.handler = { [weak self] key, fine in self?.handleMediaKey(key, fineStep: fine) ?? false }
         settings.$replaceSystemHUD.removeDuplicates()
@@ -321,12 +359,11 @@ final class NotchController {
 
     var onOpenSettings: (() -> Void)?
 
-    static let windowSize = CGSize(width: 880, height: 400)
+    static let windowSize = CGSize(width: 980, height: 460)
 
     private let panel: NotchPanel
     private var monitors: [Any] = []
     private var bag = Set<AnyCancellable>()
-    private var expandWork: DispatchWorkItem?
     private var collapseWork: DispatchWorkItem?
     private var dragPoll: Timer?
     private var dragChangeCount = 0
@@ -336,6 +373,16 @@ final class NotchController {
     private var expandedWatch: Timer?
     private var swipeAccumulator: CGFloat = 0
     private var swipeLocked = false
+    private var dwellTimer: Timer?
+    private var dwellStart = Date()
+    private var dwellSamples: [(time: Date, point: CGPoint)] = []
+    /// Set when the notch closes with the pointer still on it: it has to leave before hover
+    /// can open the notch again, so it never flickers open and shut.
+    private var awaitingExit = false
+    /// True once you've used the open panel (clicked, scrolled, typed, or lingered in it).
+    /// Until then leaving it closes it at once, so an accidental hover costs nothing.
+    private var engaged = false
+    private var openedAt = Date.distantPast
 
     /// Shared by every display's panel.
     private static let fullScreenSpace = FloatingSpace(level: .aboveFullScreen)
@@ -372,6 +419,16 @@ final class NotchController {
             self?.onOpenSettings?()
         }
         model.onRequestKeyboard = { [weak self] in self?.panel.makeKey() }
+        model.onPickColor = { [weak self] in
+            guard let self else { return }
+            self.collapse()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                self.services.colors.pick { [weak self] in
+                    self?.model.deskSection = .colors
+                    self?.expand(tab: .desk, sticky: true)
+                }
+            }
+        }
         model.onReopen = { [weak self] tab in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.expand(tab: tab, sticky: true) }
         }
@@ -396,6 +453,18 @@ final class NotchController {
             .sink { [weak self] in self?.model.timerActive = $0 }.store(in: &bag)
         s.clock.$stopwatchStart.combineLatest(s.clock.$stopwatchAccumulated).map { $0 != nil || $1 > 0 }.removeDuplicates()
             .sink { [weak self] in self?.model.stopwatchActive = $0 }.store(in: &bag)
+        s.pomodoro.$endDate.combineLatest(s.pomodoro.$pausedRemaining).map { $0 != nil || $1 != nil }.removeDuplicates()
+            .sink { [weak self] in self?.model.pomodoroActive = $0 }.store(in: &bag)
+        s.tasks.$overdue.removeDuplicates()
+            .sink { [weak self] in self?.model.overdueTask = $0 }.store(in: &bag)
+        s.tasks.$nudge.removeDuplicates()
+            .sink { [weak self] nudge in
+                guard let self else { return }
+                self.model.nudge = nudge
+                // The card has buttons, so it takes clicks while it is up.
+                self.panel.ignoresMouseEvents = self.model.ringing == nil && nudge == nil && !self.model.isExpanded
+            }
+            .store(in: &bag)
         s.downloads.$active.map { !$0.isEmpty }.removeDuplicates()
             .sink { [weak self] in self?.model.downloading = $0 }.store(in: &bag)
         s.privacy.$cameraInUse.combineLatest(s.privacy.$microphoneInUse, s.privacy.$screenRecording, s.audio.$micMuted)
@@ -408,7 +477,7 @@ final class NotchController {
                 if ringing != nil, self.model.isExpanded { self.collapse() }
                 self.model.ringing = ringing
                 // The ringing card has buttons, so it takes clicks while it is up.
-                self.panel.ignoresMouseEvents = ringing == nil && !self.model.isExpanded
+                self.panel.ignoresMouseEvents = ringing == nil && self.model.nudge == nil && !self.model.isExpanded
             }
             .store(in: &bag)
         // The model's shape depends on settings (HUD style, corner radius…): redraw when they move.
@@ -420,9 +489,17 @@ final class NotchController {
     func expand(tab: NotchTab? = nil, sticky: Bool = false, keyboard: Bool = false) {
         guard model.ringing == nil else { return }
         cancelPending()
-        if let tab { model.tab = tab }
+        if let tab {
+            model.tab = tab
+        } else if !model.isExpanded, let opening = NotchTab(rawValue: settings.openingTab), settings.isEnabled(opening) {
+            model.tab = opening
+        }
         if sticky || keyboard { stickyUntil = Date().addingTimeInterval(keyboard ? 3600 : 4) }
         let wasExpanded = model.isExpanded
+        if !wasExpanded {
+            openedAt = Date()
+            engaged = sticky || keyboard || tab != nil
+        }
         panel.ignoresMouseEvents = false
         model.setExpanded(true)
         if keyboard { panel.makeKey() }
@@ -437,15 +514,23 @@ final class NotchController {
         log.info("expanded on \(self.model.tab.rawValue, privacy: .public)")
         // Belt and braces: if mouse events go missing, still fold away once the pointer has left.
         expandedWatch?.invalidate()
-        expandedWatch = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.mouseMoved() }
+        // Checks the pointer often enough that leaving the panel closes it straight away, even
+        // when global mouse events are slow to arrive.
+        let watch = Timer(timeInterval: 1 / 30, repeats: true) { [weak self] _ in self?.mouseMoved() }
+        RunLoop.main.add(watch, forMode: .common)
+        expandedWatch = watch
+        stopDwell()
     }
 
     func collapse() {
         cancelPending()
+        stopDwell()
         stickyUntil = .distantPast
+        engaged = false
+        awaitingExit = triggerZone().contains(NSEvent.mouseLocation)
         model.dropTargeted = false
         model.setExpanded(false)
-        panel.ignoresMouseEvents = model.ringing == nil
+        panel.ignoresMouseEvents = model.ringing == nil && model.nudge == nil
         if panel.isKeyWindow {
             // Hand the keyboard back to whatever app was in front.
             panel.orderOut(nil)
@@ -457,8 +542,6 @@ final class NotchController {
     }
 
     private func cancelPending() {
-        expandWork?.cancel()
-        expandWork = nil
         collapseWork?.cancel()
         collapseWork = nil
     }
@@ -492,19 +575,24 @@ final class NotchController {
             monitors.append(m)
         }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] event in
-            if event.window === self?.panel { self?.pressBeganInside = true }
+            if event.window === self?.panel {
+                self?.pressBeganInside = true
+                self?.engaged = true
+            }
             return event
         }) {
             monitors.append(m)
         }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { [weak self] event in
             guard event.window === self?.panel else { return event }
+            self?.engaged = true
             return self?.handleSwipe(event) == true ? nil : event
         }) {
             monitors.append(m)
         }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             guard let self, event.window === self.panel else { return event }
+            self.engaged = true
             return self.handleKey(event) ? nil : event
         }) {
             monitors.append(m)
@@ -589,20 +677,33 @@ final class NotchController {
         dragPoll = timer
     }
 
-    private func hotZone() -> CGRect {
-        externalDrag ? model.screenRect.insetBy(dx: -60, dy: -40) : model.screenRect.insetBy(dx: -2, dy: -2)
+    /// What opens the notch on hover: the notch itself and a few points either side, not the
+    /// album-art wings or the hover swell. While a file is dragged, a generous area around it.
+    private func triggerZone() -> CGRect {
+        let geometry = model.geometry
+        let frame = geometry.screenFrame
+        if externalDrag { return model.screenRect.insetBy(dx: -60, dy: -40) }
+        let width = geometry.notchSize.width + 2 * Self.sideMargin
+        let height = geometry.notchSize.height + geometry.islandGap + 2
+        return CGRect(x: frame.midX - width / 2, y: frame.maxY - height, width: width, height: height + 1)
     }
 
-    /// The open panel plus a grace margin, wider at the bottom, so overshooting doesn't close it.
+    private static let sideMargin: CGFloat = 6
+
+    /// The open panel plus a small grace margin once you're using it, so overshooting an edge
+    /// doesn't close it. Before that, just the panel itself.
     private var collapseZone: CGRect {
-        let rect = model.screenRect.insetBy(dx: -18, dy: 0)
-        return CGRect(x: rect.minX, y: rect.minY - 30, width: rect.width, height: rect.height + 30)
+        guard engaged else { return model.screenRect.insetBy(dx: -4, dy: 0) }
+        let rect = model.screenRect.insetBy(dx: -12, dy: 0)
+        return CGRect(x: rect.minX, y: rect.minY - 20, width: rect.width, height: rect.height + 20)
     }
 
     private func mouseMoved() {
         let point = NSEvent.mouseLocation
-        if model.ringing != nil { return }
+        if model.ringing != nil || model.nudge != nil { return }
         if model.isExpanded {
+            // Lingering in the panel counts as using it.
+            if !engaged, model.screenRect.contains(point), Date().timeIntervalSince(openedAt) > 0.7 { engaged = true }
             if collapseZone.contains(point) || isEditingText {
                 // A keyboard-opened panel stays put; a menu-opened one switches to hover rules.
                 if stickyUntil < Date().addingTimeInterval(60) { stickyUntil = .distantPast }
@@ -613,24 +714,59 @@ final class NotchController {
             }
             return
         }
-        let over = model.screenRect.insetBy(dx: -2, dy: -2).contains(point)
-        if over != model.hovering { model.hovering = over }
+        let inZone = triggerZone().contains(point)
+        if inZone != model.hovering { model.hovering = inZone }
+        // After it closes, the pointer must leave before hovering can open it again.
+        if awaitingExit {
+            if !inZone { awaitingExit = false }
+            return
+        }
         // In click mode only a drag opens the notch by itself.
         guard settings.openTrigger == .hover || externalDrag else { return }
-        if hotZone().contains(point) {
-            guard expandWork == nil else { return }
-            let forDrop = externalDrag
-            let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.expandWork = nil
-                if self.hotZone().contains(NSEvent.mouseLocation) { self.expand(tab: forDrop ? .tray : nil) }
+        if inZone {
+            if externalDrag {
+                expand(tab: .tray)
+            } else {
+                startDwell()
             }
-            expandWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + (forDrop ? 0 : settings.hoverDelay), execute: work)
         } else {
-            expandWork?.cancel()
-            expandWork = nil
+            stopDwell()
         }
+    }
+
+    // MARK: Hover intent
+
+    /// Samples the pointer 30 times a second while it's over the notch. It opens once the pointer
+    /// has been there for the delay and has barely moved lately: a pointer that's crossing, or
+    /// sliding along the top edge, never counts, however slowly it goes.
+    private func startDwell() {
+        guard dwellTimer == nil else { return }
+        dwellStart = Date()
+        dwellSamples = [(Date(), NSEvent.mouseLocation)]
+        let timer = Timer(timeInterval: 1 / 30, repeats: true) { [weak self] _ in self?.dwellTick() }
+        RunLoop.main.add(timer, forMode: .common)
+        dwellTimer = timer
+    }
+
+    private func stopDwell() {
+        dwellTimer?.invalidate()
+        dwellTimer = nil
+        dwellSamples = []
+    }
+
+    private func dwellTick() {
+        let now = Date()
+        let point = NSEvent.mouseLocation
+        guard !model.isExpanded, triggerZone().contains(point), model.ringing == nil, model.nudge == nil else {
+            stopDwell()
+            return
+        }
+        dwellSamples.append((now, point))
+        dwellSamples.removeAll { now.timeIntervalSince($0.time) > 0.3 }
+        guard HoverIntent.isResting(samples: dwellSamples, since: dwellStart, now: now,
+                                    delay: settings.hoverDelay, sensitivity: settings.hoverSensitivity) else { return }
+        stopDwell()
+        expand()
     }
 
     private func scheduleCollapse() {
@@ -645,7 +781,60 @@ final class NotchController {
             if !self.collapseZone.contains(NSEvent.mouseLocation) { self.collapse() }
         }
         collapseWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        // Gone almost at once after an accidental hover; a moment's grace once you've used it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (engaged ? 0.22 : 0.06), execute: work)
+    }
+}
+
+/// Decides whether a pointer over the notch is resting there (open) or just passing (don't).
+enum HoverIntent {
+    static func isResting(samples: [(time: Date, point: CGPoint)], since start: Date, now: Date,
+                          delay: Double, sensitivity: HoverSensitivity) -> Bool {
+        guard now.timeIntervalSince(start) >= max(delay, 0.08) else { return false }
+        // How far it has drifted over the last moment.
+        let recent = samples.filter { now.timeIntervalSince($0.time) <= sensitivity.stillWindow }
+        guard !recent.isEmpty else { return false }
+        let xs = recent.map(\.point.x), ys = recent.map(\.point.y)
+        let drift = hypot((xs.max() ?? 0) - (xs.min() ?? 0), (ys.max() ?? 0) - (ys.min() ?? 0))
+        return drift <= sensitivity.stillTolerance
+    }
+
+    /// `--test-hover`: plays pointer paths at 30 samples a second through the rule and prints
+    /// what would happen, for each sensitivity.
+    static func selfTest() {
+        let notchWidth: CGFloat = 179 + 12
+        func path(_ seconds: Double, _ at: (Double) -> CGPoint) -> [(Double, CGPoint)] {
+            stride(from: 0.0, through: seconds, by: 1 / 30).map { ($0, at($0)) }
+        }
+        // Whether each path should open the notch; a slow creep counts as a hover only on Quick.
+        let scenarios: [(String, (HoverSensitivity) -> Bool, [(Double, CGPoint)])] = [
+            ("rests on the notch", { _ in true }, path(1, { _ in CGPoint(x: 90, y: 10) })),
+            ("hand tremor (±2 pt) while resting", { _ in true }, path(1, { t in CGPoint(x: 90 + 2 * sin(t * 40), y: 10 + 2 * cos(t * 33)) })),
+            ("crosses the notch at 300 pt/s", { _ in false }, path(notchWidth / 300, { t in CGPoint(x: t * 300, y: 10) })),
+            ("slides along the top edge at 120 pt/s", { _ in false }, path(notchWidth / 120, { t in CGPoint(x: t * 120, y: 2) })),
+            ("creeps across at 60 pt/s", { $0 == .quick }, path(notchWidth / 60, { t in CGPoint(x: t * 60, y: 8) })),
+            ("touches it for 0.1 s and leaves", { _ in false }, path(0.1, { _ in CGPoint(x: 90, y: 10) })),
+            ("slows down and stops on it", { _ in true }, path(1, { t in CGPoint(x: t < 0.4 ? t * 200 : 80, y: 10) })),
+        ]
+        for sensitivity in HoverSensitivity.allCases {
+            print("\n\(sensitivity.title) (delay \(Int(sensitivity.delay * 1000)) ms):")
+            for (name, expected, points) in scenarios {
+                let start = Date()
+                var samples: [(time: Date, point: CGPoint)] = []
+                var opened: Double?
+                for (t, point) in points {
+                    let now = start.addingTimeInterval(t)
+                    samples.append((now, point))
+                    samples.removeAll { now.timeIntervalSince($0.time) > 0.3 }
+                    if isResting(samples: samples, since: start, now: now, delay: sensitivity.delay, sensitivity: sensitivity) {
+                        opened = t
+                        break
+                    }
+                }
+                let verdict = opened.map { "opens at \(Int($0 * 1000)) ms" } ?? "stays closed"
+                print("  \((opened != nil) == expected(sensitivity) ? "ok  " : "FAIL") \(name): \(verdict)")
+            }
+        }
     }
 }
 

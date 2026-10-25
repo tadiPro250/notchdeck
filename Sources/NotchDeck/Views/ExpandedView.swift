@@ -20,7 +20,10 @@ struct ExpandedView: View {
                 case .calendar:
                     CalendarTabView(calendar: services.calendar)
                 case .clock:
-                    ClockView(model: model, clock: services.clock, timer: services.timer, settings: settings)
+                    ClockView(model: model, clock: services.clock, timer: services.timer, pomodoro: services.pomodoro,
+                              settings: settings)
+                case .tasks:
+                    TasksView(model: model, tasks: services.tasks, pomodoro: services.pomodoro)
                 case .desk:
                     DeskView(model: model, services: services, settings: settings)
                 case .clipboard:
@@ -45,22 +48,31 @@ struct ExpandedView: View {
             }
         }
         .foregroundStyle(.white)
+        .shadow(color: .black.opacity(photoShadow ? 0.55 : 0), radius: 2, y: 1)
         .animation(.spring(response: 0.32, dampingFraction: 0.82), value: model.tab)
         .frame(width: model.expandedSize.width, height: model.expandedSize.height, alignment: .top)
     }
 
+    private var photoShadow: Bool {
+        settings.photoReadability && settings.backgroundMode != .theme && !settings.backgroundPhotos.isEmpty
+    }
+
     private var header: some View {
         HStack(spacing: 0) {
+            // Narrower buttons when many tabs share the space left of the notch.
+            let tabs = settings.visibleTabs
+            let room = (model.expandedSize.width - 40 - (model.geometry.hasNotch ? model.geometry.notchSize.width : 16)) / 2
+            let width = min(27, max(19, room / CGFloat(max(tabs.count, 1))))
             HStack(spacing: 0) {
-                ForEach(settings.visibleTabs) { tab in
-                    TabButton(tab: tab, selected: model.tab == tab) { model.tab = tab }
+                ForEach(tabs) { tab in
+                    TabButton(tab: tab, selected: model.tab == tab, width: width) { model.tab = tab }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Color.clear
                 .frame(width: model.geometry.hasNotch ? model.geometry.notchSize.width : 16)
             HStack(spacing: 10) {
-                StatusCluster(system: services.system)
+                StatusCluster(system: services.system, battery: settings.headerBattery, clock: settings.headerClock)
                 IconButton(symbol: "gearshape.fill", help: "Settings") { model.openSettings() }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -72,6 +84,7 @@ struct ExpandedView: View {
 private struct TabButton: View {
     let tab: NotchTab
     let selected: Bool
+    var width: CGFloat = 27
     let action: () -> Void
     @StateObject private var hovering = ViewState<Bool>(false)
     @Environment(\.look) private var look
@@ -80,7 +93,7 @@ private struct TabButton: View {
         Button(action: action) {
             Image(systemName: tab.symbol)
                 .font(.system(size: 11, weight: .semibold))
-                .frame(width: 27, height: 24)
+                .frame(width: width, height: 24)
                 .background(Capsule().fill(selected ? look.accent.opacity(0.22)
                                                     : Color.white.opacity(hovering.value ? 0.08 : 0)))
                 .scaleEffect(hovering.value && !selected ? 1.08 : 1)
@@ -118,10 +131,12 @@ struct IconButton: View {
 
 private struct StatusCluster: View {
     @ObservedObject var system: SystemStatus
+    var battery = true
+    var clock = true
 
     var body: some View {
         HStack(spacing: 10) {
-            if let level = system.batteryLevel {
+            if battery, let level = system.batteryLevel {
                 HStack(spacing: 4) {
                     Text("\(level)%")
                         .font(.system(size: 11, weight: .medium).monospacedDigit())
@@ -131,9 +146,11 @@ private struct StatusCluster: View {
                 }
                 .foregroundStyle(.white.opacity(0.8))
             }
-            TimelineView(.everyMinute) { context in
-                Text(context.date, format: .dateTime.hour().minute())
-                    .font(.system(size: 11, weight: .semibold).monospacedDigit())
+            if clock {
+                TimelineView(.everyMinute) { context in
+                    Text(context.date, format: .dateTime.hour().minute())
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                }
             }
         }
     }

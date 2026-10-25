@@ -40,7 +40,7 @@ struct NotchGeometry: Equatable {
 }
 
 enum NotchTab: String, CaseIterable, Identifiable {
-    case home, widgets, tray, calendar, clock, desk, clipboard, mirror, controls, system
+    case home, widgets, tasks, tray, calendar, clock, desk, clipboard, mirror, controls, system
 
     var id: String { rawValue }
 
@@ -48,6 +48,7 @@ enum NotchTab: String, CaseIterable, Identifiable {
         switch self {
         case .home: "Home"
         case .widgets: "Widgets"
+        case .tasks: "Tasks"
         case .tray: "Tray"
         case .calendar: "Calendar"
         case .clock: "Clock"
@@ -63,6 +64,7 @@ enum NotchTab: String, CaseIterable, Identifiable {
         switch self {
         case .home: "house.fill"
         case .widgets: "square.grid.2x2.fill"
+        case .tasks: "checklist.checked"
         case .tray: "tray.full.fill"
         case .calendar: "calendar"
         case .clock: "alarm.fill"
@@ -111,6 +113,8 @@ struct ActivityState: Equatable {
     var tint: Color
     /// 0…1 for a ring around the icon (battery level), nil for none.
     var progress: Double?
+    /// A colour (hex) to show as a swatch in place of the icon: the colour picker's result.
+    var swatch: String?
     var id = UUID()
 }
 
@@ -131,7 +135,10 @@ enum Presentation: Equatable {
     case download
     case countdown
     case stopwatch
+    case overdue
+    case pomodoro
     case timer
+    case nudge(TaskItem)
     case activity(ActivityState)
     case hud(HUDState)
     case ringing(Ringing)
@@ -154,6 +161,11 @@ final class NotchModel: ObservableObject {
     @Published var ringing: Ringing?
     @Published var countdown: CalendarEvent?
     @Published var downloading = false
+    @Published var pomodoroActive = false
+    /// The current task, once it's past its deadline: the closed notch counts the overtime.
+    @Published var overdueTask: TaskItem?
+    /// "Still on it?": an overdue task asking for an answer.
+    @Published var nudge: TaskItem?
     @Published var privacy = PrivacyState()
     @Published var dropTargeted = false
     /// The pointer is over the closed notch: it swells a little, inviting a hover.
@@ -166,6 +178,12 @@ final class NotchModel: ObservableObject {
     var onOpenSettings: (() -> Void)?
     /// Views with text fields ask for keyboard focus through this.
     var onRequestKeyboard: (() -> Void)?
+    /// Which Desk section is showing (kept here so the notch can reopen on Colours after a pick).
+    @Published var deskSection: DeskSection = .notes
+    /// The Tasks tab's deadline card; closed whenever the notch folds away.
+    let deadlineSheet = DeadlineSheet()
+    /// Folds the notch, shows the colour loupe, and reopens on Desk → Colours.
+    var onPickColor: (() -> Void)?
     /// Opens the notch again on a tab, after an open panel closes.
     var onReopen: ((NotchTab) -> Void)?
 
@@ -182,10 +200,13 @@ final class NotchModel: ObservableObject {
     var presentation: Presentation {
         if let ringing { return .ringing(ringing) }
         if isExpanded { return .expanded }
+        if let nudge { return .nudge(nudge) }
         if let hud { return .hud(hud) }
         if let activity { return .activity(activity) }
         if timerActive { return .timer }
+        if pomodoroActive { return .pomodoro }
         if stopwatchActive { return .stopwatch }
+        if overdueTask != nil, settings.tasksInNotch { return .overdue }
         if countdown != nil, settings.calendarCountdown { return .countdown }
         if downloading, settings.downloadActivity { return .download }
         if isPlaying, settings.showLiveActivity { return .live }
@@ -200,7 +221,7 @@ final class NotchModel: ObservableObject {
         let radius: CGFloat
         switch presentation {
         case .expanded: radius = CGFloat(settings.cornerRadius)
-        case .activity, .ringing: radius = 22
+        case .activity, .ringing, .nudge: radius = 22
         case .hud where settings.hudStyle == .bar: radius = 16
         default: radius = isIsland ? geometry.notchSize.height / 2 : 10
         }
@@ -216,6 +237,12 @@ final class NotchModel: ObservableObject {
             body = expandedSize
         case .ringing:
             body = CGSize(width: max(notch.width + 230, 410), height: notch.height + 68)
+        case .nudge:
+            body = CGSize(width: max(notch.width + 260, 440), height: notch.height + 84)
+        case .pomodoro:
+            body = CGSize(width: notch.width + 2 * 80, height: notch.height)
+        case .overdue:
+            body = CGSize(width: notch.width + 2 * 84, height: notch.height)
         case .hud:
             body = settings.hudStyle == .bar
                 ? CGSize(width: notch.width + 90, height: notch.height + 28)
@@ -236,7 +263,7 @@ final class NotchModel: ObservableObject {
             body = notch
         }
         // Hovering swells the closed notch a touch before it opens.
-        if hovering, !isExpanded, ringing == nil, hud == nil, activity == nil {
+        if hovering, settings.hoverSwell, !isExpanded, ringing == nil, nudge == nil, hud == nil, activity == nil {
             return CGSize(width: body.width + 2 * topRadius + 16, height: body.height + 5)
         }
         return CGSize(width: body.width + 2 * topRadius, height: body.height)
@@ -254,6 +281,7 @@ final class NotchModel: ObservableObject {
         guard expanded != isExpanded else { return }
         isExpanded = expanded
         hovering = false
+        if !expanded { deadlineSheet.target = nil }
         if expanded {
             hud = nil
             activity = nil
@@ -295,10 +323,14 @@ final class NotchModel: ObservableObject {
         }
     }
 
+    /// The open panel, sized in Settings → Customise.
     var expandedSize: CGSize {
-        let size = Self.expandedContentSize
-        return settings.showQuickLaunch ? CGSize(width: size.width, height: size.height + Self.dockHeight) : size
+        let width = min(max(settings.panelWidth, 680), 900)
+        let height = Self.expandedContentSize.height + min(max(settings.panelExtraHeight, 0), 60)
+        return CGSize(width: width, height: settings.showQuickLaunch ? height + Self.dockHeight : height)
     }
+
+    func pickColor() { onPickColor?() }
 
     func requestCollapse() { onRequestCollapse?() }
     func openSettings() { onOpenSettings?() }

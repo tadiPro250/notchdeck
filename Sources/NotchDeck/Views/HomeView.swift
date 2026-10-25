@@ -343,7 +343,8 @@ struct PillButtonStyle: ButtonStyle {
             .font(.system(size: 11, weight: .medium))
             .padding(.horizontal, 10)
             .frame(height: 24)
-            .background(Capsule().fill(Color.white.opacity(configuration.isPressed ? 0.2 : 0.1)))
+            .background(Capsule().fill(Color.black.opacity(0.3))
+                .overlay(Capsule().fill(Color.white.opacity(configuration.isPressed ? 0.2 : 0.1))))
             .contentShape(Capsule())
     }
 }

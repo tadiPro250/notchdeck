@@ -281,7 +281,9 @@ struct GlassTile: View {
 
     var body: some View {
         RoundedRectangle(cornerRadius: corner, style: .continuous)
-            .fill(LinearGradient(colors: [.white.opacity(0.13), .white.opacity(0.05)], startPoint: .top, endPoint: .bottom))
+            .fill(Color.black.opacity(0.28))
+            .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .fill(LinearGradient(colors: [.white.opacity(0.13), .white.opacity(0.05)], startPoint: .top, endPoint: .bottom)))
             .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous)
                 .strokeBorder(LinearGradient(colors: [.white.opacity(0.25), .white.opacity(0.04)],
                                              startPoint: .top, endPoint: .bottom), lineWidth: 0.8))

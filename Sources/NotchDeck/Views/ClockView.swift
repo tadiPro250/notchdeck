@@ -5,16 +5,35 @@ struct ClockView: View {
     let model: NotchModel
     @ObservedObject var clock: ClockCenter
     @ObservedObject var timer: FocusTimer
+    let pomodoro: PomodoroTimer
     @ObservedObject var settings: AppSettings
+    @StateObject private var focusMode: ViewState<Bool>
     @Environment(\.look) private var look
+
+    init(model: NotchModel, clock: ClockCenter, timer: FocusTimer, pomodoro: PomodoroTimer, settings: AppSettings) {
+        self.model = model
+        self.clock = clock
+        self.timer = timer
+        self.pomodoro = pomodoro
+        self.settings = settings
+        // Opens on Focus while a Pomodoro is under way.
+        _focusMode = StateObject(wrappedValue: ViewState(pomodoro.isActive))
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             AlarmsColumn(model: model, clock: clock)
                 .frame(width: 250)
             divider
-            TimerColumn(timer: timer)
-                .frame(width: 180)
+            VStack(spacing: 6) {
+                ModeSwitch(focus: $focusMode.value)
+                if focusMode.value {
+                    PomodoroColumn(pomodoro: pomodoro, settings: settings)
+                } else {
+                    TimerColumn(timer: timer)
+                }
+            }
+            .frame(width: 180)
             divider
             StopwatchColumn(clock: clock)
                 .frame(maxWidth: .infinity)
@@ -164,16 +183,19 @@ private struct NewAlarmForm: View {
 
 private struct TimerColumn: View {
     @ObservedObject var timer: FocusTimer
+    @StateObject private var hours = ViewState<Int>(0)
     @StateObject private var minutes = ViewState<Int>(10)
     @StateObject private var seconds = ViewState<Int>(0)
     @Environment(\.look) private var look
 
+    private static let limit = 23 * 3600 + 59 * 60 + 59
+    private var total: Int { hours.value * 3600 + minutes.value * 60 + seconds.value }
+
     var body: some View {
         VStack(spacing: 7) {
-            ColumnHeader(title: "Timer", symbol: "timer") {
-                if !timer.isActive {
-                    Text("⌥ scroll = sec").foregroundStyle(.white.opacity(0.35)).font(.system(size: 9, weight: .medium))
-                }
+            if !timer.isActive {
+                Text("Scroll each drum · ⌥ scroll = seconds")
+                    .foregroundStyle(.white.opacity(0.35)).font(.system(size: 9, weight: .medium))
             }
             if timer.isActive {
                 TimelineView(.periodic(from: .now, by: 0.5)) { context in
@@ -185,7 +207,8 @@ private struct TimerColumn: View {
                             .rotationEffect(.degrees(-90))
                             .shadow(color: look.accent.opacity(0.5), radius: 6)
                         Text(FocusTimer.clock(timer.remaining(at: context.date)))
-                            .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
+                            .font(.system(size: timer.remaining(at: context.date) >= 3600 ? 17 : 20,
+                                          weight: .semibold, design: .rounded).monospacedDigit())
                             .contentTransition(.numericText(countsDown: true))
                     }
                     .frame(width: 104, height: 104)
@@ -196,80 +219,94 @@ private struct TimerColumn: View {
                     Button("Stop") { timer.cancel() }.buttonStyle(PillButtonStyle())
                 }
             } else {
-                HStack(spacing: 2) {
-                    DrumWheel(value: $minutes.value, range: 0...180, unit: "min", seconds: false) { delta, alternate in
-                        if alternate { step(seconds: delta) } else { step(minutes: delta) }
+                HStack(spacing: 1) {
+                    DrumWheel(value: $hours.value, range: 0...23, unit: "hr", help: "Scroll to set hours",
+                              width: 50, size: 25) { delta, alternate in
+                        step(by: alternate ? delta : delta * 3600)
                     }
-                    Text(":")
-                        .font(.system(size: 26, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .offset(y: -6)
-                    DrumWheel(value: $seconds.value, range: 0...59, unit: "sec", seconds: true) { delta, _ in
-                        step(seconds: delta)
+                    colon
+                    DrumWheel(value: $minutes.value, range: 0...59, unit: "min", width: 50, size: 25) { delta, alternate in
+                        step(by: alternate ? delta : delta * 60)
+                    }
+                    colon
+                    DrumWheel(value: $seconds.value, range: 0...59, unit: "sec", seconds: true, width: 50, size: 25) { delta, _ in
+                        step(by: delta)
                     }
                 }
                 .frame(height: 104)
                 HStack(spacing: 4) {
-                    ForEach([1, 5, 10, 25], id: \.self) { preset in
-                        Button("\(preset)m") {
-                            minutes.value = preset
-                            seconds.value = 0
-                        }
-                        .buttonStyle(ChipStyle(selected: minutes.value == preset && seconds.value == 0))
+                    ForEach([(60, "1m"), (300, "5m"), (1500, "25m"), (3600, "1h")], id: \.1) { preset in
+                        Button(preset.1) { set(preset.0) }
+                            .buttonStyle(ChipStyle(selected: total == preset.0))
                     }
                 }
                 Button {
-                    timer.start(minutes: Double(minutes.value) + Double(seconds.value) / 60)
+                    timer.start(minutes: Double(total) / 60)
                 } label: {
                     Label("Start", systemImage: "play.fill").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(AccentPillStyle())
-                .disabled(minutes.value == 0 && seconds.value == 0)
+                .disabled(total == 0)
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: timer.isActive)
     }
 
-    private func step(minutes delta: Int) {
-        minutes.value = min(max(minutes.value + delta, 0), 180)
+    private var colon: some View {
+        Text(":")
+            .font(.system(size: 21, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white.opacity(0.5))
+            .offset(y: -6)
     }
 
-    /// Seconds wrap into minutes, so scrolling past 59 carries over.
-    private func step(seconds delta: Int) {
-        let total = min(max(minutes.value * 60 + seconds.value + delta, 0), 180 * 60)
-        minutes.value = total / 60
-        seconds.value = total % 60
+    /// Every drum moves the same total, so 59 s + 1 rolls into the next minute and so on.
+    private func step(by delta: Int) {
+        set(total + delta)
+    }
+
+    private func set(_ seconds: Int) {
+        let clamped = min(max(seconds, 0), Self.limit)
+        hours.value = clamped / 3600
+        minutes.value = clamped / 60 % 60
+        self.seconds.value = clamped % 60
     }
 }
 
 /// A picker drum: the value large in the middle, its neighbours fading above and below. Scroll
 /// it with the trackpad or a mouse wheel; the closure says whether ⌥ or ⌃ was held.
-private struct DrumWheel: View {
+struct DrumWheel: View {
     @Binding var value: Int
     let range: ClosedRange<Int>
     let unit: String
-    let seconds: Bool
+    var seconds = false
+    /// Tooltip; the timer's own wording when nil.
+    var help: String?
+    var width: CGFloat = 62
+    /// Point size of the middle number.
+    var size: CGFloat = 30
+    /// Values shown above and below: 2, or 1 where height is tight.
+    var neighbours = 2
     let onStep: (Int, Bool) -> Void
     @StateObject private var hovering = ViewState<Bool>(false)
     @Environment(\.look) private var look
 
     var body: some View {
         VStack(spacing: 0) {
-            neighbour(value - 2, opacity: 0.12)
+            if neighbours > 1 { neighbour(value - 2, opacity: 0.12) }
             neighbour(value - 1, opacity: 0.32)
             Text(format(value))
-                .font(.system(size: 30, weight: .semibold, design: .rounded).monospacedDigit())
+                .font(.system(size: size, weight: .semibold, design: .rounded).monospacedDigit())
                 .foregroundStyle(.white)
                 .contentTransition(.numericText(value: Double(value)))
                 .frame(height: 36)
             neighbour(value + 1, opacity: 0.32)
-            neighbour(value + 2, opacity: 0.12)
+            if neighbours > 1 { neighbour(value + 2, opacity: 0.12) }
             Text(unit.uppercased())
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(hovering.value ? look.accent : .white.opacity(0.35))
                 .padding(.top, 1)
         }
-        .frame(width: 62)
+        .frame(width: width)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(Color.white.opacity(hovering.value ? 0.1 : 0.05))
             .frame(height: 38)
@@ -280,7 +317,7 @@ private struct DrumWheel: View {
         .overlay(ScrollCatcher { delta, alternate in onStep(delta, alternate) })
         .onHover { hovering.value = $0 }
         .animation(.spring(response: 0.25, dampingFraction: 0.85), value: value)
-        .help(seconds ? "Scroll to set seconds" : "Scroll to set minutes; hold ⌥ or ⌃ for seconds")
+        .help(help ?? (seconds ? "Scroll to set seconds" : "Scroll to set minutes; hold ⌥ or ⌃ for seconds"))
     }
 
     private func neighbour(_ n: Int, opacity: Double) -> some View {
@@ -344,7 +381,8 @@ struct ChipStyle: ButtonStyle {
             .foregroundStyle(selected ? .black : .white.opacity(0.8))
             .padding(.horizontal, 7)
             .frame(height: 20)
-            .background(Capsule().fill(selected ? look.accent : Color.white.opacity(configuration.isPressed ? 0.2 : 0.09)))
+            .background(Capsule().fill(selected ? look.accent : Color.black.opacity(0.3))
+                .overlay(Capsule().fill(selected ? .clear : Color.white.opacity(configuration.isPressed ? 0.2 : 0.1))))
             .contentShape(Capsule())
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
     }
@@ -364,6 +402,98 @@ struct AccentPillStyle: ButtonStyle {
             .contentShape(Capsule())
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(.spring(response: 0.2, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+}
+
+/// Timer or Focus (Pomodoro), at the top of the middle column.
+private struct ModeSwitch: View {
+    @Binding var focus: Bool
+    @Environment(\.look) private var look
+
+    var body: some View {
+        HStack(spacing: 2) {
+            segment("Timer", "timer", selected: !focus) { focus = false }
+            segment("Focus", "brain.head.profile", selected: focus) { focus = true }
+        }
+        .padding(2)
+        .background(Capsule().fill(Color.white.opacity(0.07)))
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: focus)
+    }
+
+    private func segment(_ title: String, _ symbol: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 10, weight: .bold))
+                .frame(maxWidth: .infinity)
+                .frame(height: 20)
+                .foregroundStyle(selected ? look.accent : .white.opacity(0.55))
+                .background(Capsule().fill(selected ? look.accent.opacity(0.2) : .clear))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: Pomodoro
+
+private struct PomodoroColumn: View {
+    @ObservedObject var pomodoro: PomodoroTimer
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        let tint = pomodoro.phase.isBreak ? Color.green : Color(red: 1, green: 0.42, blue: 0.38)
+        VStack(spacing: 7) {
+            TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                ZStack {
+                    Circle().stroke(tint.opacity(0.18), lineWidth: 6)
+                    Circle()
+                        .trim(from: 0, to: pomodoro.isActive ? 1 - pomodoro.progress(at: context.date) : 1)
+                        .stroke(tint, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .shadow(color: tint.opacity(0.5), radius: 6)
+                    VStack(spacing: 0) {
+                        Text(pomodoro.phase.title.uppercased())
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(tint)
+                        Text(FocusTimer.clock(pomodoro.remaining(at: context.date)))
+                            .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
+                            .contentTransition(.numericText(countsDown: true))
+                    }
+                }
+                .frame(width: 96, height: 96)
+                .animation(.easeInOut(duration: 0.4), value: pomodoro.remaining(at: context.date))
+            }
+            // A dot per round: filled when done, ringed for the one under way.
+            HStack(spacing: 5) {
+                ForEach(1...pomodoro.rounds, id: \.self) { index in
+                    Circle()
+                        .fill(index < pomodoro.round || (index == pomodoro.round && pomodoro.phase.isBreak)
+                              ? tint : Color.white.opacity(0.15))
+                        .overlay(Circle().strokeBorder(index == pomodoro.round ? tint : .clear, lineWidth: 1.2))
+                        .frame(width: 7, height: 7)
+                }
+                Text("\(pomodoro.completedToday) today")
+                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.45))
+                    .padding(.leading, 4)
+            }
+            HStack(spacing: 6) {
+                Button {
+                    pomodoro.togglePause()
+                } label: {
+                    Label(pomodoro.isRunning ? "Pause" : (pomodoro.isPaused ? "Resume" : "Start"),
+                          systemImage: pomodoro.isRunning ? "pause.fill" : "play.fill")
+                        .frame(width: 70)
+                }
+                .buttonStyle(AccentPillStyle())
+                IconButton(symbol: "forward.end.fill", help: "Skip to the next phase") { pomodoro.skip() }
+                IconButton(symbol: "arrow.counterclockwise", help: "Start over") { pomodoro.reset() }
+            }
+            Text("\(settings.pomodoroWork) · \(settings.pomodoroShortBreak) · \(settings.pomodoroLongBreak) min")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.white.opacity(0.35))
+                .help("Work · short break · long break; change them in Settings → Clock")
+        }
     }
 }
 
