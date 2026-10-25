@@ -242,6 +242,7 @@ struct ActionTile: View {
             VStack(spacing: 7) {
                 Image(systemName: symbol)
                     .font(.system(size: 16, weight: .semibold))
+                    .frame(height: 22)
                 Text(title)
                     .font(.system(size: 9.5, weight: .medium))
                     .lineLimit(1)

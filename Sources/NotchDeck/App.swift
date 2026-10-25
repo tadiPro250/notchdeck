@@ -47,9 +47,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // `--open <tab>` opens the notch on launch (handy for screenshots and for testing).
         let args = CommandLine.arguments
-        if let i = args.firstIndex(of: "--open"), args.count > i + 1, let tab = NotchTab(rawValue: args[i + 1]) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                self?.hub?.expand(tab: tab, sticky: true)
+        // `--open desk:colors` also picks a Desk section.
+        if let i = args.firstIndex(of: "--open"), args.count > i + 1 {
+            let parts = args[i + 1].split(separator: ":").map(String.init)
+            if let tab = NotchTab(rawValue: parts[0]) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                    if parts.count > 1, let section = DeskSection(rawValue: parts[1]) {
+                        self?.hub?.controllers.forEach { $0.model.deskSection = section }
+                    }
+                    // `--open tasks:deadline` shows the deadline card for a new task.
+                    if parts.count > 1, parts[1] == "deadline" {
+                        self?.hub?.controllers.forEach { $0.model.deadlineSheet.target = .newTask }
+                    }
+                    self?.hub?.expand(tab: tab, sticky: true)
+                }
             }
         }
 

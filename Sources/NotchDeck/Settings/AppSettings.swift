@@ -167,6 +167,7 @@ final class AppSettings: ObservableObject {
     @Published var slideshowInterval: Double { didSet { save(slideshowInterval, "slideshowInterval") } }
     @Published var backgroundDim: Double { didSet { save(backgroundDim, "backgroundDim") } }
     @Published var backgroundBlur: Double { didSet { save(backgroundBlur, "backgroundBlur") } }
+    @Published var photoReadability: Bool { didSet { save(photoReadability, "photoReadability") } }
 
     // Widgets and quick launch
     @Published var widgets: [WidgetItem] { didSet { saveJSON(widgets, "widgets") } }
@@ -302,6 +303,7 @@ final class AppSettings: ObservableObject {
         slideshowInterval = value("slideshowInterval", 12)
         backgroundDim = value("backgroundDim", 0.45)
         backgroundBlur = value("backgroundBlur", 0)
+        photoReadability = value("photoReadability", true)
 
         func decoded<T: Decodable>(_ key: String, _ fallback: T) -> T {
             d.data(forKey: key).flatMap { try? JSONDecoder().decode(T.self, from: $0) } ?? fallback

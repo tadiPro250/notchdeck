@@ -596,6 +596,9 @@ private struct BackgroundCard: View {
                 Row(title: "Blur") {
                     Slider(value: $settings.backgroundBlur, in: 0...30).frame(width: 180)
                 }
+                Divider()
+                ToggleRow(title: "Keep text readable", detail: "A light shade over the photo and a soft shadow under text.",
+                          isOn: $settings.photoReadability)
             }
         }
     }

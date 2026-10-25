@@ -48,8 +48,13 @@ struct ExpandedView: View {
             }
         }
         .foregroundStyle(.white)
+        .shadow(color: .black.opacity(photoShadow ? 0.55 : 0), radius: 2, y: 1)
         .animation(.spring(response: 0.32, dampingFraction: 0.82), value: model.tab)
         .frame(width: model.expandedSize.width, height: model.expandedSize.height, alignment: .top)
+    }
+
+    private var photoShadow: Bool {
+        settings.photoReadability && settings.backgroundMode != .theme && !settings.backgroundPhotos.isEmpty
     }
 
     private var header: some View {

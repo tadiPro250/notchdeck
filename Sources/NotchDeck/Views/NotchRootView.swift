@@ -96,7 +96,7 @@ struct NotchRootView: View {
         let speed = min(max(settings.animationSpeed, 0.5), 2)
         guard settings.bouncyAnimation else { return .spring(response: 0.38 * speed, dampingFraction: 1) }
         return model.isExpanded ? .spring(response: 0.5 * speed, dampingFraction: 0.68)
-                                : .spring(response: 0.4 * speed, dampingFraction: 0.8)
+                                : .spring(response: 0.3 * speed, dampingFraction: 0.82)
     }
 
     @ViewBuilder
@@ -172,6 +172,8 @@ private struct PanelBackground: View {
                     .blur(radius: settings.backgroundBlur)
                     .scaleEffect(settings.backgroundBlur > 0 ? 1.08 : 1)
                 Color.black.opacity(settings.backgroundDim)
+                // Keeps text readable over bright photos, whatever the dim is set to.
+                if settings.photoReadability { Color.black.opacity(0.3) }
             } else if settings.glass {
                 Rectangle().fill(.ultraThinMaterial)
                 look.theme.background.opacity(1 - settings.glassClarity * 0.6)

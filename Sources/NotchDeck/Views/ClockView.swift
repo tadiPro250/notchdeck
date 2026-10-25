@@ -284,13 +284,15 @@ struct DrumWheel: View {
     var width: CGFloat = 62
     /// Point size of the middle number.
     var size: CGFloat = 30
+    /// Values shown above and below: 2, or 1 where height is tight.
+    var neighbours = 2
     let onStep: (Int, Bool) -> Void
     @StateObject private var hovering = ViewState<Bool>(false)
     @Environment(\.look) private var look
 
     var body: some View {
         VStack(spacing: 0) {
-            neighbour(value - 2, opacity: 0.12)
+            if neighbours > 1 { neighbour(value - 2, opacity: 0.12) }
             neighbour(value - 1, opacity: 0.32)
             Text(format(value))
                 .font(.system(size: size, weight: .semibold, design: .rounded).monospacedDigit())
@@ -298,7 +300,7 @@ struct DrumWheel: View {
                 .contentTransition(.numericText(value: Double(value)))
                 .frame(height: 36)
             neighbour(value + 1, opacity: 0.32)
-            neighbour(value + 2, opacity: 0.12)
+            if neighbours > 1 { neighbour(value + 2, opacity: 0.12) }
             Text(unit.uppercased())
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(hovering.value ? look.accent : .white.opacity(0.35))
@@ -379,7 +381,8 @@ struct ChipStyle: ButtonStyle {
             .foregroundStyle(selected ? .black : .white.opacity(0.8))
             .padding(.horizontal, 7)
             .frame(height: 20)
-            .background(Capsule().fill(selected ? look.accent : Color.white.opacity(configuration.isPressed ? 0.2 : 0.09)))
+            .background(Capsule().fill(selected ? look.accent : Color.black.opacity(0.3))
+                .overlay(Capsule().fill(selected ? .clear : Color.white.opacity(configuration.isPressed ? 0.2 : 0.1))))
             .contentShape(Capsule())
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
     }

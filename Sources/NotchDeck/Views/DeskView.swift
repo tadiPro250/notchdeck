@@ -132,8 +132,11 @@ private struct TodoPane: View {
                 }
                 HStack(spacing: 6) {
                     TextField("New reminder — press Return", text: $draft.value)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(GlassTile(corner: 9))
                         .onSubmit {
                             reminders.add(draft.value)
                             draft.value = ""

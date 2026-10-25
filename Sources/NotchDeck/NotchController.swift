@@ -374,6 +374,12 @@ final class NotchController {
     private var expandedWatch: Timer?
     private var swipeAccumulator: CGFloat = 0
     private var swipeLocked = false
+    /// The last pointer sample, for its speed: a pointer racing past isn't asking to open.
+    private var lastSample: (point: CGPoint, time: Date)?
+    /// True once you've used the open panel (clicked, scrolled, typed, or lingered in it).
+    /// Until then leaving it closes it at once, so an accidental hover costs nothing.
+    private var engaged = false
+    private var openedAt = Date.distantPast
 
     /// Shared by every display's panel.
     private static let fullScreenSpace = FloatingSpace(level: .aboveFullScreen)
@@ -487,6 +493,10 @@ final class NotchController {
         }
         if sticky || keyboard { stickyUntil = Date().addingTimeInterval(keyboard ? 3600 : 4) }
         let wasExpanded = model.isExpanded
+        if !wasExpanded {
+            openedAt = Date()
+            engaged = sticky || keyboard || tab != nil
+        }
         panel.ignoresMouseEvents = false
         model.setExpanded(true)
         if keyboard { panel.makeKey() }
@@ -507,6 +517,7 @@ final class NotchController {
     func collapse() {
         cancelPending()
         stickyUntil = .distantPast
+        engaged = false
         model.dropTargeted = false
         model.setExpanded(false)
         panel.ignoresMouseEvents = model.ringing == nil && model.nudge == nil
@@ -556,19 +567,24 @@ final class NotchController {
             monitors.append(m)
         }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] event in
-            if event.window === self?.panel { self?.pressBeganInside = true }
+            if event.window === self?.panel {
+                self?.pressBeganInside = true
+                self?.engaged = true
+            }
             return event
         }) {
             monitors.append(m)
         }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { [weak self] event in
             guard event.window === self?.panel else { return event }
+            self?.engaged = true
             return self?.handleSwipe(event) == true ? nil : event
         }) {
             monitors.append(m)
         }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             guard let self, event.window === self.panel else { return event }
+            self.engaged = true
             return self.handleKey(event) ? nil : event
         }) {
             monitors.append(m)
@@ -657,16 +673,30 @@ final class NotchController {
         externalDrag ? model.screenRect.insetBy(dx: -60, dy: -40) : model.screenRect.insetBy(dx: -2, dy: -2)
     }
 
-    /// The open panel plus a grace margin, wider at the bottom, so overshooting doesn't close it.
+    /// The open panel plus a small grace margin once you're using it, so overshooting an edge
+    /// doesn't close it. Before that, just the panel itself.
     private var collapseZone: CGRect {
-        let rect = model.screenRect.insetBy(dx: -18, dy: 0)
-        return CGRect(x: rect.minX, y: rect.minY - 30, width: rect.width, height: rect.height + 30)
+        guard engaged else { return model.screenRect.insetBy(dx: -4, dy: 0) }
+        let rect = model.screenRect.insetBy(dx: -12, dy: 0)
+        return CGRect(x: rect.minX, y: rect.minY - 20, width: rect.width, height: rect.height + 20)
     }
+
+    /// Faster than this (points per second) and the pointer is passing by, not hovering.
+    private static let passingSpeed: CGFloat = 650
 
     private func mouseMoved() {
         let point = NSEvent.mouseLocation
+        let now = Date()
+        var speed: CGFloat = 0
+        if let last = lastSample {
+            let dt = now.timeIntervalSince(last.time)
+            if dt > 0.001 { speed = hypot(point.x - last.point.x, point.y - last.point.y) / CGFloat(dt) }
+        }
+        lastSample = (point, now)
         if model.ringing != nil || model.nudge != nil { return }
         if model.isExpanded {
+            // Lingering in the panel counts as using it.
+            if !engaged, model.screenRect.contains(point), now.timeIntervalSince(openedAt) > 0.7 { engaged = true }
             if collapseZone.contains(point) || isEditingText {
                 // A keyboard-opened panel stays put; a menu-opened one switches to hover rules.
                 if stickyUntil < Date().addingTimeInterval(60) { stickyUntil = .distantPast }
@@ -682,6 +712,11 @@ final class NotchController {
         // In click mode only a drag opens the notch by itself.
         guard settings.openTrigger == .hover || externalDrag else { return }
         if hotZone().contains(point) {
+            // Still moving fast: start the wait over, so only a pointer that settles opens it.
+            if speed > Self.passingSpeed, !externalDrag {
+                expandWork?.cancel()
+                expandWork = nil
+            }
             guard expandWork == nil else { return }
             let forDrop = externalDrag
             let work = DispatchWorkItem { [weak self] in
@@ -690,7 +725,7 @@ final class NotchController {
                 if self.hotZone().contains(NSEvent.mouseLocation) { self.expand(tab: forDrop ? .tray : nil) }
             }
             expandWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + (forDrop ? 0 : settings.hoverDelay), execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + (forDrop ? 0 : max(settings.hoverDelay, 0.15)), execute: work)
         } else {
             expandWork?.cancel()
             expandWork = nil
@@ -709,7 +744,8 @@ final class NotchController {
             if !self.collapseZone.contains(NSEvent.mouseLocation) { self.collapse() }
         }
         collapseWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        // Gone almost at once after an accidental hover; a moment's grace once you've used it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (engaged ? 0.22 : 0.06), execute: work)
     }
 }
 

@@ -2,6 +2,18 @@ import SwiftUI
 
 private let overdueRed = Color(red: 1, green: 0.32, blue: 0.32)
 
+/// The deadline editor, shown as a card over the whole tab so nothing in it gets cut off.
+final class DeadlineSheet: ObservableObject {
+    enum Target: Equatable {
+        case newTask
+        case task(UUID)
+    }
+
+    @Published var target: Target?
+    /// The custom deadline chosen for the task being typed in.
+    @Published var newTaskDue: Date?
+}
+
 /// The Tasks tab: today at a glance and the task you're on (left), what's next by deadline and
 /// what got done (right). One task opens at a time to edit its deadline and steps.
 struct TasksView: View {
@@ -12,21 +24,28 @@ struct TasksView: View {
     @StateObject private var showFinished = ViewState<Bool>(true)
     @Environment(\.look) private var look
 
+    private var sheet: DeadlineSheet { model.deadlineSheet }
+
     var body: some View {
+        content
+            .overlay { DeadlineOverlay(model: model, tasks: tasks, sheet: sheet) }
+    }
+
+    private var content: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 10) {
                     TodayHeader(tasks: tasks, pomodoro: pomodoro, openSettings: model.openSettings)
                     ScrollView(.vertical, showsIndicators: false) {
                         if let current = tasks.current {
-                            TaskCard(task: current, tasks: tasks, model: model, now: context.date, isCurrent: true,
+                            TaskCard(task: current, tasks: tasks, model: model, sheet: sheet, now: context.date, isCurrent: true,
                                      expanded: $expanded.value)
                         } else {
                             EmptyCurrent()
                         }
                     }
                     .frame(maxHeight: .infinity, alignment: .top)
-                    NewTaskField(model: model, tasks: tasks)
+                    NewTaskField(model: model, tasks: tasks, sheet: sheet)
                 }
                 .frame(width: 300)
 
@@ -44,7 +63,7 @@ struct TasksView: View {
                                 .padding(.vertical, 6)
                         }
                         ForEach(tasks.upNext) { task in
-                            TaskCard(task: task, tasks: tasks, model: model, now: context.date, isCurrent: false,
+                            TaskCard(task: task, tasks: tasks, model: model, sheet: sheet, now: context.date, isCurrent: false,
                                      expanded: $expanded.value)
                                 .transition(.opacity.combined(with: .move(edge: .top)))
                         }
@@ -152,6 +171,7 @@ private struct TaskCard: View {
     let task: TaskItem
     let tasks: TaskStore
     let model: NotchModel
+    let sheet: DeadlineSheet
     let now: Date
     let isCurrent: Bool
     @Binding var expanded: UUID?
@@ -216,7 +236,7 @@ private struct TaskCard: View {
                 }
             }
             if open {
-                TaskDetail(task: task, tasks: tasks, model: model, now: now)
+                TaskDetail(task: task, tasks: tasks, model: model, now: now) { sheet.target = .task(task.id) }
                     .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
             }
         }
@@ -284,13 +304,25 @@ private struct TaskDetail: View {
     let tasks: TaskStore
     let model: NotchModel
     let now: Date
+    let editDeadline: () -> Void
     @StateObject private var step = ViewState<String>("")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            DeadlinePicker(model: model, current: task.due) { tasks.setDue(task.id, $0) }
-                .padding(9)
-                .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.black.opacity(0.3)))
+            HStack(spacing: 8) {
+                Label("Deadline", systemImage: "flag.fill")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.75))
+                Text(task.due.map(DeadlinePicker.describe) ?? "None")
+                    .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(task.isOverdue(at: now) ? overdueRed : Color(red: 0.4, green: 0.7, blue: 1))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Button(task.due == nil ? "Set…" : "Change…", action: editDeadline)
+                    .buttonStyle(SetButtonStyle())
+            }
+            .padding(9)
+            .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.black.opacity(0.3)))
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -346,6 +378,7 @@ struct DeadlinePicker: View {
     let model: NotchModel
     /// The deadline being edited, if there is one.
     let current: Date?
+    var title = "Deadline"
     var actionTitle = "Set"
     let onSet: (Date?) -> Void
 
@@ -370,9 +403,10 @@ struct DeadlinePicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Label("Deadline", systemImage: "flag.fill")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.75))
+                Label(title, systemImage: "flag.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1)
                 Spacer()
                 HStack(spacing: 2) {
                     segment("In", .relative)
@@ -392,7 +426,7 @@ struct DeadlinePicker: View {
                         step(minutes: fine ? delta : delta * 5)
                     }
                 }
-                .frame(height: 104)
+                .frame(height: 78)
                 .frame(maxWidth: .infinity)
             } else {
                 HStack(spacing: 8) {
@@ -402,7 +436,7 @@ struct DeadlinePicker: View {
                         .simultaneousGesture(TapGesture().onEnded { model.requestKeyboard() })
                     Spacer(minLength: 0)
                 }
-                .frame(height: 30)
+                .frame(height: 78)
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -448,7 +482,7 @@ struct DeadlinePicker: View {
 
     private func wheel(_ value: Binding<Int>, _ range: ClosedRange<Int>, _ unit: String, help: String,
                        onStep: @escaping (Int, Bool) -> Void) -> some View {
-        DrumWheel(value: value, range: range, unit: unit, help: help, onStep: onStep)
+        DrumWheel(value: value, range: range, unit: unit, help: help, width: 56, size: 26, neighbours: 1, onStep: onStep)
     }
 
     private func segment(_ title: String, _ value: Mode) -> some View {
@@ -500,15 +534,15 @@ struct DeadlinePicker: View {
         Preset(title: "1h", minutes: 60),
         Preset(title: "3h", minutes: 180),
         Preset(title: "Tonight", date: { at(hour: 21, daysAhead: 0) }),
-        Preset(title: "Tomorrow 9am", date: { at(hour: 9, daysAhead: 1) }),
+        Preset(title: "Tmrw 9am", date: { at(hour: 9, daysAhead: 1) }),
         Preset(title: "3 days", minutes: 3 * 1440),
         Preset(title: "1 week", minutes: 7 * 1440),
-        Preset(title: "End of week", date: {
+        Preset(title: "Fri 6pm", date: {
             let calendar = Calendar.current
             let friday = calendar.nextDate(after: Date(), matching: DateComponents(hour: 18, weekday: 6), matchingPolicy: .nextTime)
             return friday ?? Date().addingTimeInterval(3 * 86400)
         }),
-        Preset(title: "End of month", date: {
+        Preset(title: "Month end", date: {
             let calendar = Calendar.current
             let start = calendar.dateInterval(of: .month, for: Date())?.start ?? Date()
             let last = calendar.date(byAdding: DateComponents(month: 1, day: -1), to: start) ?? Date()
@@ -589,11 +623,10 @@ private struct FinishedRow: View {
 private struct NewTaskField: View {
     let model: NotchModel
     @ObservedObject var tasks: TaskStore
+    /// Holds the custom deadline, which wins over the quick choices.
+    @ObservedObject var sheet: DeadlineSheet
     @StateObject private var title = ViewState<String>("")
     @StateObject private var minutes = ViewState<Int?>(60)
-    /// A deadline from the custom picker, which wins over the quick choices.
-    @StateObject private var custom = ViewState<Date?>(nil)
-    @StateObject private var picking = ViewState<Bool>(false)
     @Environment(\.look) private var look
 
     private static let quick: [(Int?, String)] = [(30, "30m"), (60, "1h"), (180, "3h"), (1440, "1d"), (nil, "None")]
@@ -610,30 +643,24 @@ private struct NewTaskField: View {
                     .onSubmit(add)
                     .simultaneousGesture(TapGesture().onEnded { model.requestKeyboard() })
             }
-            if picking.value {
-                DeadlinePicker(model: model, current: custom.value, actionTitle: "Use") { date in
-                    custom.value = date
-                    picking.value = false
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottom)))
-            } else {
-                HStack(spacing: 4) {
-                    Text("Due").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.white.opacity(0.45))
-                    if let date = custom.value {
-                        Button(DeadlinePicker.describe(date)) { picking.value = true }
-                            .buttonStyle(ChipStyle(selected: true))
-                        Button { custom.value = nil } label: { Image(systemName: "xmark") }
-                            .buttonStyle(ChipStyle())
-                    } else {
-                        ForEach(Self.quick, id: \.1) { choice in
-                            Button(choice.1) { minutes.value = choice.0 }
-                                .buttonStyle(ChipStyle(selected: minutes.value == choice.0))
-                        }
-                    }
-                    Button { picking.value = true } label: { Image(systemName: "slider.horizontal.3") }
+            HStack(spacing: 4) {
+                Text("Due").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.white.opacity(0.55))
+                if let date = sheet.newTaskDue {
+                    Button(DeadlinePicker.describe(date)) { sheet.target = .newTask }
+                        .buttonStyle(ChipStyle(selected: true))
+                        .lineLimit(1)
+                    Button { sheet.newTaskDue = nil } label: { Image(systemName: "xmark") }
                         .buttonStyle(ChipStyle())
-                        .help("Custom: any number of days, hours and minutes, or a date")
+                } else {
+                    ForEach(Self.quick, id: \.1) { choice in
+                        Button(choice.1) { minutes.value = choice.0 }
+                            .buttonStyle(ChipStyle(selected: minutes.value == choice.0))
+                    }
                 }
+                Spacer(minLength: 0)
+                Button { sheet.target = .newTask } label: { Image(systemName: "slider.horizontal.3") }
+                    .buttonStyle(ChipStyle())
+                    .help("Custom: any number of days, hours and minutes, or a date")
             }
         }
         .padding(.horizontal, 10)
@@ -642,9 +669,69 @@ private struct NewTaskField: View {
     }
 
     private func add() {
-        tasks.add(title.value, due: custom.value ?? minutes.value.map { Date().addingTimeInterval(Double($0) * 60) })
+        tasks.add(title.value, due: sheet.newTaskDue ?? minutes.value.map { Date().addingTimeInterval(Double($0) * 60) })
         title.value = ""
-        custom.value = nil
-        picking.value = false
+        sheet.newTaskDue = nil
+    }
+}
+
+/// The deadline picker as a card over the tab, with the rest dimmed behind it.
+private struct DeadlineOverlay: View {
+    let model: NotchModel
+    @ObservedObject var tasks: TaskStore
+    @ObservedObject var sheet: DeadlineSheet
+
+    var body: some View {
+        overlay.animation(.spring(response: 0.32, dampingFraction: 0.85), value: sheet.target)
+    }
+
+    @ViewBuilder
+    private var overlay: some View {
+        if let target = sheet.target {
+            ZStack {
+                Color.black.opacity(0.55)
+                    .contentShape(Rectangle())
+                    .onTapGesture { sheet.target = nil }
+                VStack(spacing: 0) {
+                    picker(for: target)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .frame(width: 480)
+                .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color(white: 0.08).opacity(0.96)))
+                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.05)],
+                                                 startPoint: .top, endPoint: .bottom), lineWidth: 1))
+                .overlay(alignment: .topTrailing) {
+                    Button { sheet.target = nil } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .frame(width: 20, height: 20)
+                            .background(Circle().fill(Color.white.opacity(0.1)))
+                    }
+                    .buttonStyle(.plain)
+                    .offset(x: 8, y: -8)
+                }
+                .shadow(color: .black.opacity(0.5), radius: 20, y: 8)
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+        }
+    }
+
+    @ViewBuilder
+    private func picker(for target: DeadlineSheet.Target) -> some View {
+        switch target {
+        case .newTask:
+            DeadlinePicker(model: model, current: sheet.newTaskDue, title: "New task's deadline", actionTitle: "Use") { date in
+                sheet.newTaskDue = date
+                sheet.target = nil
+            }
+        case .task(let id):
+            let task = tasks.tasks.first { $0.id == id }
+            DeadlinePicker(model: model, current: task?.due, title: "Deadline for \u{201C}\(task?.title ?? "task")\u{201D}") { date in
+                tasks.setDue(id, date)
+                sheet.target = nil
+            }
+        }
     }
 }

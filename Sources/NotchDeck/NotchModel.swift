@@ -180,6 +180,8 @@ final class NotchModel: ObservableObject {
     var onRequestKeyboard: (() -> Void)?
     /// Which Desk section is showing (kept here so the notch can reopen on Colours after a pick).
     @Published var deskSection: DeskSection = .notes
+    /// The Tasks tab's deadline card; closed whenever the notch folds away.
+    let deadlineSheet = DeadlineSheet()
     /// Folds the notch, shows the colour loupe, and reopens on Desk → Colours.
     var onPickColor: (() -> Void)?
     /// Opens the notch again on a tab, after an open panel closes.
@@ -279,6 +281,7 @@ final class NotchModel: ObservableObject {
         guard expanded != isExpanded else { return }
         isExpanded = expanded
         hovering = false
+        if !expanded { deadlineSheet.target = nil }
         if expanded {
             hud = nil
             activity = nil
