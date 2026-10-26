@@ -30,16 +30,43 @@ Updates: NotchDeck checks this repository's releases (Settings → About).
 |---|---|
 | **Home** | Now playing from **any app** (Spotify, Music, Safari, Brave/Chrome/YouTube, Podcasts, QuickTime…) with artwork, scrubber, controls, visualiser and **time-synced lyrics**; beside it a widget of your choice: clock with weather and next event, weather, next event, or system stats |
 | **Tray** | Drag files onto the notch to stash them; drag out, double-click to open, AirDrop. Optionally keeps its own copy; finished downloads can land here |
-| **Calendar** | Today's and tomorrow's events from every calendar in Calendar.app |
+| **Calendar** | Today's and tomorrow's events from every calendar in Calendar.app, a week strip with busy days, a **Join** button for Zoom/Meet/Teams/Webex/FaceTime links (green from ten minutes before), and a click opens the event in Calendar |
 | **Clock** | Alarms (repeat days, label, snooze), a timer and a stopwatch with laps |
 | **Desk** | Notes (auto-saved), To-do from Apple Reminders (tick off, add), your Shortcuts one click away, and a Script widget that runs a shell command on an interval |
-| **Clipboard** | Recent copies; click to copy again; **pin** favourites; optionally remembered across restarts, encrypted |
+| **Clipboard** | Recent copies; click to copy again; **search** and filter by text, links, images or files; **pin** favourites; optionally remembered across restarts, encrypted |
 | **Mirror** | The front camera, for a check before calls; off the moment you leave the tab |
 | **Controls** | Brightness for the built-in display **and external monitors (DDC)**, keyboard backlight, volume, sound output switcher, mic mute, Keep Awake, Dark Mode, Hide Desktop, Screenshot, Display Off, Sleep, Lock |
-| **System** | CPU, GPU, RAM, disk, network up/down, battery health, cycles and capacity, and the batteries of AirPods, mice and keyboards |
+| **System** | CPU, GPU, RAM, disk, **the apps using the CPU right now** (click to bring one forward), network up/down, battery health, cycles and capacity, and the batteries of AirPods, mice and keyboards |
 
 Each tab except Home can be switched off in Settings → Modules. Move between tabs with a two-finger
 swipe, ← → (when opened by the shortcut), or ⌘1–9. Esc closes.
+
+Videos (Netflix or YouTube in a browser, QuickTime, TV, IINA, VLC…) show on Home with 15-second skip
+buttons instead of track buttons, get no lyrics search, and never bring up the record-player lock screen:
+that is for songs. A browser tab counts as a song only when it says who the artist and album are (Spotify,
+YouTube Music and Apple Music on the web do), or comes from a YouTube "– Topic" channel.
+
+## The dog
+
+It wanders, sniffs about, sits, lies down, scratches, barks when it's hungry, chases your pointer when it's
+in a playful mood, turns to look at the pointer when it comes near, and says hello when you unlock the Mac.
+From bedtime to wake-up (11 pm to 7 am unless you change it in Settings → Your Dog) it sleeps right through;
+pet it and it lifts its head, then settles back down. It wakes with a stretch.
+
+Its clock only runs while the Mac is awake: system sleep, a sleeping display and a shut-down Mac don't
+count, so a closed lid never starves it. Care has consequences:
+
+- **Food:** a bowl lasts about ten waking hours. Feed it when it's hungry. Food past full gives it no love,
+  puts weight on, and a second helping on a full stomach makes it throw up.
+- **Weight:** kept full all day it gets heavier, then overweight (slower, no more chasing), then obese, which
+  makes it ill. Underfed it gets thin. Weight comes off slowly with sensible feeding and play.
+- **Love:** affection fades over about ten waking hours; click it to pet it (a pat counts for less if you've
+  just given ten). A lonely dog droops, lies about, won't play, and in time falls ill.
+- **Health:** starving, obesity and loneliness wear it down; good care builds it back up. A sick dog lies
+  with a thermometer and needs rest or the **vet** (from its card), who keeps it for twenty minutes and
+  sends it home better, with advice.
+
+The notch tells you once when it's hungry, lonely, getting heavy, sick, or back from the vet.
 
 ## Around the closed notch
 

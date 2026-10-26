@@ -243,9 +243,23 @@ struct NowPlayingCard: View {
                                  tint: look.accent) { player.seek(to: $0) }
                     }
                     HStack(spacing: 30) {
-                        MediaButton(symbol: "backward.fill", size: 15) { player.previous() }
+                        // A film, a video or a podcast skips back and forward; a song changes track.
+                        if track.isMusic {
+                            MediaButton(symbol: "backward.fill", size: 15) { player.previous() }
+                        } else {
+                            MediaButton(symbol: "gobackward.15", size: 15) {
+                                player.seek(to: max(0, track.position(at: Date()) - 15))
+                            }
+                        }
                         MediaButton(symbol: track.isPlaying ? "pause.fill" : "play.fill", size: 22) { player.playPause() }
-                        MediaButton(symbol: "forward.fill", size: 15) { player.next() }
+                        if track.isMusic {
+                            MediaButton(symbol: "forward.fill", size: 15) { player.next() }
+                        } else {
+                            MediaButton(symbol: "goforward.15", size: 15) {
+                                let ahead = track.position(at: Date()) + 15
+                                player.seek(to: track.duration > 0 ? min(ahead, track.duration - 1) : ahead)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.top, 2)

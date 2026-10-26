@@ -216,12 +216,10 @@ final class NotchHub {
                                             tint: .blue, progress: 1), for: 4)
         }
 
-        s.cat.onHungry = { [weak self] name in
+        s.cat.onAlert = { [weak self] alert in
             guard let self, self.settings.catEnabled else { return }
-            let detail = self.settings.catFeeding == .hover
-                ? "Rest the pointer on \(name) and press Feed" : "Open the notch → Widgets and press Feed"
-            self.showActivity(ActivityState(symbol: "dog.fill", title: "\(name) is hungry",
-                                            detail: detail, tint: .orange, progress: nil), for: 5)
+            self.showActivity(ActivityState(symbol: alert.symbol, title: alert.title, detail: alert.detail,
+                                            tint: alert.tint, progress: nil), for: 5)
         }
 
         s.tasks.isFocusing = { s.pomodoro.isRunning && s.pomodoro.phase == .work }
@@ -383,6 +381,10 @@ final class NotchController {
     /// Until then leaving it closes it at once, so an accidental hover costs nothing.
     private var engaged = false
     private var openedAt = Date.distantPast
+    /// True while a menu (a picker's pop-up, a context menu) is open: the pointer is on the menu,
+    /// outside the panel, and the panel must not fold away under it.
+    private var menuTracking = false
+    private var menuObservers: [NSObjectProtocol] = []
 
     /// Shared by every display's panel.
     private static let fullScreenSpace = FloatingSpace(level: .aboveFullScreen)
@@ -435,11 +437,26 @@ final class NotchController {
 
         wireState()
         installMonitors()
+        let center = NotificationCenter.default
+        menuObservers.append(center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil,
+                                                queue: .main) { [weak self] _ in
+            guard let self, self.model.isExpanded else { return }
+            self.menuTracking = true
+            self.engaged = true
+            self.cancelPending()
+        })
+        menuObservers.append(center.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil,
+                                                queue: .main) { [weak self] _ in
+            // A moment's grace for the pointer to come back from where the menu was.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self?.menuTracking = false }
+        })
     }
 
     func close() {
         monitors.forEach(NSEvent.removeMonitor)
         monitors = []
+        menuObservers.forEach(NotificationCenter.default.removeObserver)
+        menuObservers = []
         expandedWatch?.invalidate()
         dragPoll?.invalidate()
         panel.orderOut(nil)
@@ -678,24 +695,36 @@ final class NotchController {
     }
 
     /// What opens the notch on hover: the notch itself and a few points either side, not the
-    /// album-art wings or the hover swell. While a file is dragged, a generous area around it.
+    /// album-art wings. Once the pointer is on it the zone grows a little (hysteresis), so a hand
+    /// resting on the edge doesn't flicker in and out and restart the wait. While a file is
+    /// dragged, a generous area around it.
     private func triggerZone() -> CGRect {
         let geometry = model.geometry
         let frame = geometry.screenFrame
         if externalDrag { return model.screenRect.insetBy(dx: -60, dy: -40) }
-        let width = geometry.notchSize.width + 2 * Self.sideMargin
-        let height = geometry.notchSize.height + geometry.islandGap + 2
+        let grow: CGFloat = model.hovering || dwellTimer != nil ? 8 : 0
+        let width = geometry.notchSize.width + 2 * (Self.sideMargin + grow)
+        let height = geometry.notchSize.height + geometry.islandGap + 2 + grow * 0.75
         return CGRect(x: frame.midX - width / 2, y: frame.maxY - height, width: width, height: height + 1)
     }
 
-    private static let sideMargin: CGFloat = 6
+    private static let sideMargin: CGFloat = 8
 
     /// The open panel plus a small grace margin once you're using it, so overshooting an edge
     /// doesn't close it. Before that, just the panel itself.
     private var collapseZone: CGRect {
-        guard engaged else { return model.screenRect.insetBy(dx: -4, dy: 0) }
-        let rect = model.screenRect.insetBy(dx: -12, dy: 0)
-        return CGRect(x: rect.minX, y: rect.minY - 20, width: rect.width, height: rect.height + 20)
+        guard engaged else { return model.screenRect.insetBy(dx: -8, dy: 0).insetBy(dx: 0, dy: -6) }
+        let rect = model.screenRect.insetBy(dx: -14, dy: 0)
+        return CGRect(x: rect.minX, y: rect.minY - 24, width: rect.width, height: rect.height + 24)
+    }
+
+    /// The pointer pressed against the top of the screen over the notch: it's still "in" the
+    /// notch (the edge stops it going any higher), so that never closes it. Only over the notch:
+    /// along the rest of the top edge it's on its way to the menu bar.
+    private func atTopEdge(_ point: CGPoint) -> Bool {
+        let frame = model.geometry.screenFrame
+        let half = model.geometry.notchSize.width / 2 + Self.sideMargin + 8
+        return point.y >= frame.maxY - 2 && abs(point.x - frame.midX) <= half
     }
 
     private func mouseMoved() {
@@ -704,7 +733,7 @@ final class NotchController {
         if model.isExpanded {
             // Lingering in the panel counts as using it.
             if !engaged, model.screenRect.contains(point), Date().timeIntervalSince(openedAt) > 0.7 { engaged = true }
-            if collapseZone.contains(point) || isEditingText {
+            if collapseZone.contains(point) || atTopEdge(point) || isEditingText || menuTracking {
                 // A keyboard-opened panel stays put; a menu-opened one switches to hover rules.
                 if stickyUntil < Date().addingTimeInterval(60) { stickyUntil = .distantPast }
                 collapseWork?.cancel()
@@ -764,7 +793,8 @@ final class NotchController {
         dwellSamples.append((now, point))
         dwellSamples.removeAll { now.timeIntervalSince($0.time) > 0.3 }
         guard HoverIntent.isResting(samples: dwellSamples, since: dwellStart, now: now,
-                                    delay: settings.hoverDelay, sensitivity: settings.hoverSensitivity) else { return }
+                                    delay: settings.hoverDelay, sensitivity: settings.hoverSensitivity,
+                                    topEdge: model.geometry.screenFrame.maxY) else { return }
         stopDwell()
         expand()
     }
@@ -774,29 +804,41 @@ final class NotchController {
             guard let self else { return }
             self.collapseWork = nil
             // Don't fold away while a file is being dragged out of the tray, or while typing.
-            if (self.pressBeganInside && NSEvent.pressedMouseButtons & 1 != 0) || self.isEditingText {
+            if (self.pressBeganInside && NSEvent.pressedMouseButtons & 1 != 0) || self.isEditingText || self.menuTracking {
                 self.scheduleCollapse()
                 return
             }
-            if !self.collapseZone.contains(NSEvent.mouseLocation) { self.collapse() }
+            let point = NSEvent.mouseLocation
+            if !self.collapseZone.contains(point), !self.atTopEdge(point) { self.collapse() }
         }
         collapseWork = work
-        // Gone almost at once after an accidental hover; a moment's grace once you've used it.
-        DispatchQueue.main.asyncAfter(deadline: .now() + (engaged ? 0.22 : 0.06), execute: work)
+        // Soon after an accidental hover, but not so soon that overshooting an edge on the way
+        // in shuts it; more grace once you've used it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (engaged ? 0.3 : 0.15), execute: work)
     }
 }
 
-/// Decides whether a pointer over the notch is resting there (open) or just passing (don't).
+/// Decides whether a pointer over the notch means it (open) or is just passing (don't). Like
+/// the other notch apps it waits out the hover delay; then it opens once the pointer has slowed
+/// down, rather than demanding it stop dead. A pointer pushed up against the top edge over the
+/// notch and stopped there counts too; one sliding along the edge, crossing the menu bar, doesn't.
 enum HoverIntent {
     static func isResting(samples: [(time: Date, point: CGPoint)], since start: Date, now: Date,
-                          delay: Double, sensitivity: HoverSensitivity) -> Bool {
+                          delay: Double, sensitivity: HoverSensitivity, topEdge: CGFloat? = nil) -> Bool {
         guard now.timeIntervalSince(start) >= max(delay, 0.08) else { return false }
-        // How far it has drifted over the last moment.
+        // Its speed over the last moment.
         let recent = samples.filter { now.timeIntervalSince($0.time) <= sensitivity.stillWindow }
-        guard !recent.isEmpty else { return false }
+        guard let first = recent.first, let last = recent.last else { return false }
+        let span = max(last.time.timeIntervalSince(first.time), 1 / 30)
+        let speed = hypot(last.point.x - first.point.x, last.point.y - first.point.y) / span
+        // Small jitter (a resting hand) never counts as moving.
         let xs = recent.map(\.point.x), ys = recent.map(\.point.y)
         let drift = hypot((xs.max() ?? 0) - (xs.min() ?? 0), (ys.max() ?? 0) - (ys.min() ?? 0))
-        return drift <= sensitivity.stillTolerance
+        if drift <= sensitivity.stillTolerance { return true }
+        // Sliding along the very top edge is how the pointer travels across the menu bar, so
+        // moving there has to be slower still to count.
+        let pinned = topEdge.map { edge in recent.allSatisfy { $0.point.y >= edge - 1.5 } } ?? false
+        return speed <= sensitivity.maxSpeed * (pinned ? 0.6 : 1)
     }
 
     /// `--test-hover`: plays pointer paths at 30 samples a second through the rule and prints
@@ -806,15 +848,18 @@ enum HoverIntent {
         func path(_ seconds: Double, _ at: (Double) -> CGPoint) -> [(Double, CGPoint)] {
             stride(from: 0.0, through: seconds, by: 1 / 30).map { ($0, at($0)) }
         }
-        // Whether each path should open the notch; a slow creep counts as a hover only on Quick.
+        // Whether each path should open the notch. `y` is the distance down from the top of the
+        // screen (0 is pressed against the edge).
         let scenarios: [(String, (HoverSensitivity) -> Bool, [(Double, CGPoint)])] = [
             ("rests on the notch", { _ in true }, path(1, { _ in CGPoint(x: 90, y: 10) })),
             ("hand tremor (±2 pt) while resting", { _ in true }, path(1, { t in CGPoint(x: 90 + 2 * sin(t * 40), y: 10 + 2 * cos(t * 33)) })),
+            ("flicked up to the edge and stopped", { _ in true }, path(1, { t in CGPoint(x: 95, y: max(0, 30 - t * 400)) })),
             ("crosses the notch at 300 pt/s", { _ in false }, path(notchWidth / 300, { t in CGPoint(x: t * 300, y: 10) })),
-            ("slides along the top edge at 120 pt/s", { _ in false }, path(notchWidth / 120, { t in CGPoint(x: t * 120, y: 2) })),
-            ("creeps across at 60 pt/s", { $0 == .quick }, path(notchWidth / 60, { t in CGPoint(x: t * 60, y: 8) })),
+            ("crosses the menu bar along the top edge at 120 pt/s", { $0 == .quick }, path(notchWidth / 120, { t in CGPoint(x: t * 120, y: 0) })),
+            ("drifts on it at 60 pt/s", { $0 != .deliberate }, path(notchWidth / 60, { t in CGPoint(x: t * 60, y: 8) })),
             ("touches it for 0.1 s and leaves", { _ in false }, path(0.1, { _ in CGPoint(x: 90, y: 10) })),
             ("slows down and stops on it", { _ in true }, path(1, { t in CGPoint(x: t < 0.4 ? t * 200 : 80, y: 10) })),
+            ("comes up from below and slows on it", { _ in true }, path(1, { t in CGPoint(x: 90, y: max(12, 60 - 300 * t + 150 * t * t)) })),
         ]
         for sensitivity in HoverSensitivity.allCases {
             print("\n\(sensitivity.title) (delay \(Int(sensitivity.delay * 1000)) ms):")
@@ -824,9 +869,11 @@ enum HoverIntent {
                 var opened: Double?
                 for (t, point) in points {
                     let now = start.addingTimeInterval(t)
-                    samples.append((now, point))
+                    // Into screen coordinates: y up, the top edge at 1000.
+                    samples.append((now, CGPoint(x: point.x, y: 1000 - point.y)))
                     samples.removeAll { now.timeIntervalSince($0.time) > 0.3 }
-                    if isResting(samples: samples, since: start, now: now, delay: sensitivity.delay, sensitivity: sensitivity) {
+                    if isResting(samples: samples, since: start, now: now, delay: sensitivity.delay, sensitivity: sensitivity,
+                                 topEdge: 1000) {
                         opened = t
                         break
                     }
@@ -838,8 +885,8 @@ enum HoverIntent {
     }
 }
 
-/// The full-screen record player on the lock screen. It is up whenever the Mac is locked and
-/// something is playing or paused, and gets out of the way when nothing is.
+/// The full-screen record player on the lock screen. It is up whenever the Mac is locked and a
+/// song is playing or paused, and gets out of the way when nothing is, or when it's a video.
 final class LockScreenWidget {
     private var window: NSPanel?
     private var presenter: FloatingSpace?
@@ -863,8 +910,9 @@ final class LockScreenWidget {
             self?.locked = false
             self?.hide()
         })
-        // While locked: a song starting brings it up, the player closing takes it down.
-        services.player.$track.map { $0 != nil }.removeDuplicates()
+        // While locked: a song starting brings it up, the player closing (or a video taking
+        // over) takes it down.
+        services.player.$track.map { $0?.isMusic == true }.removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.update() }
             .store(in: &bag)
@@ -872,7 +920,8 @@ final class LockScreenWidget {
 
     private func update() {
         guard locked, let services else { return }
-        if services.settings.lockScreenWidget, services.player.track != nil { show() } else { hide() }
+        // The record player is for songs: a film or a video in a browser never brings it up.
+        if services.settings.lockScreenWidget, services.player.track?.isMusic == true { show() } else { hide() }
     }
 
     /// `onDesktop` shows it over the desktop instead, for a few seconds (the preview menu item).

@@ -23,6 +23,7 @@ final class SystemStats: ObservableObject {
     private var previousTicks: (busy: UInt64, total: UInt64)?
     private var previousNetwork: (received: UInt64, sent: UInt64, at: Date)?
     private var timer: Timer?
+    private var diskSampledAt = Date.distantPast
 
     init(live: Bool = true) {
         guard live else { return }
@@ -54,7 +55,12 @@ final class SystemStats: ObservableObject {
         sampleCPU()
         sampleGPU()
         sampleMemory()
-        sampleDisk()
+        // Free space barely moves, and asking for it is slow (macOS works out what's purgeable),
+        // so once a minute, off the main thread.
+        if Date().timeIntervalSince(diskSampledAt) > 60 {
+            diskSampledAt = Date()
+            DispatchQueue.global(qos: .utility).async { [weak self] in self?.sampleDisk() }
+        }
         sampleNetwork()
         sampleBattery()
     }
@@ -176,7 +182,9 @@ final class SystemStats: ObservableObject {
         guard let values = try? URL(fileURLWithPath: "/").resourceValues(forKeys: keys),
               let free = values.volumeAvailableCapacityForImportantUsage,
               let total = values.volumeTotalCapacity, total > 0 else { return }
-        disk = 1 - Double(free) / Double(total)
-        diskFreeGB = Double(free) / 1_000_000_000
+        DispatchQueue.main.async { [weak self] in
+            self?.disk = 1 - Double(free) / Double(total)
+            self?.diskFreeGB = Double(free) / 1_000_000_000
+        }
     }
 }

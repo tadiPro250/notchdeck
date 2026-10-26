@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// CPU/GPU/RAM/disk, network speed, battery health and accessory batteries.
+/// CPU/GPU/RAM/disk and what's using it, network speed, battery health and accessory batteries.
 struct SystemView: View {
     let services: NotchServices
 
@@ -38,7 +38,108 @@ private struct GaugesColumn: View {
                 StatGauge(label: "RAM", value: stats.memory, detail: String(format: "%.1f GB", stats.memoryUsedGB))
                 StatGauge(label: "Disk", value: stats.disk, detail: String(format: "%.0f GB free", stats.diskFreeGB))
             }
+            TopProcesses().padding(.top, 4)
         }
+    }
+}
+
+/// The few processes using the most CPU right now, sampled every two seconds while the tab is
+/// open. Click one to bring its app forward (or Activity Monitor for a background process).
+private struct TopProcesses: View {
+    struct Entry: Identifiable, Equatable {
+        let pid: Int32
+        let name: String
+        let cpu: Double
+        let memoryMB: Double
+        var id: Int32 { pid }
+    }
+
+    @StateObject private var entries = ViewState<[Entry]>([])
+    @StateObject private var ticker = ViewState<Timer?>(nil)
+    @Environment(\.look) private var look
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            SectionTitle(text: "Using the CPU")
+            if entries.value.isEmpty {
+                Text("…").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+            }
+            ForEach(entries.value) { entry in
+                Button { open(entry) } label: {
+                    HStack(spacing: 6) {
+                        icon(entry).resizable().frame(width: 14, height: 14)
+                        Text(entry.name).font(.system(size: 10.5, weight: .medium)).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(entry.memoryMB >= 1024 ? String(format: "%.1f GB", entry.memoryMB / 1024)
+                                                    : String(format: "%.0f MB", entry.memoryMB))
+                            .font(.system(size: 9.5).monospacedDigit())
+                            .foregroundStyle(.white.opacity(0.45))
+                        Text(String(format: "%.0f%%", entry.cpu))
+                            .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(entry.cpu > 80 ? .orange : look.accent)
+                            .frame(width: 38, alignment: .trailing)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(NSRunningApplication(processIdentifier: entry.pid)?.localizedName.map { "Show \($0)" }
+                      ?? "Open Activity Monitor")
+            }
+        }
+        .onAppear {
+            sample()
+            ticker.value?.invalidate()
+            ticker.value = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in sample() }
+        }
+        .onDisappear {
+            ticker.value?.invalidate()
+            ticker.value = nil
+        }
+    }
+
+    private func icon(_ entry: Entry) -> Image {
+        if let app = NSRunningApplication(processIdentifier: entry.pid), let image = app.icon { return Image(nsImage: image) }
+        return Image(systemName: "gearshape")
+    }
+
+    private func open(_ entry: Entry) {
+        if let app = NSRunningApplication(processIdentifier: entry.pid), app.activationPolicy == .regular {
+            app.activate()
+        } else {
+            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"),
+                                               configuration: NSWorkspace.OpenConfiguration())
+        }
+    }
+
+    private func sample() {
+        DispatchQueue.global(qos: .utility).async {
+            let list = Self.top(4)
+            DispatchQueue.main.async { if list != entries.value { entries.value = list } }
+        }
+    }
+
+    /// `ps` sorted by CPU, the busiest few; app helpers are shown under their app's name.
+    static func top(_ count: Int) -> [Entry] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-Aceo", "pid=,pcpu=,rss=,comm=", "-r"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let own = ProcessInfo.processInfo.processIdentifier
+        var result: [Entry] = []
+        for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
+            guard parts.count == 4, let pid = Int32(parts[0]), let cpu = Double(parts[1]), let rss = Double(parts[2]),
+                  pid != own, cpu >= 0.5 else { continue }
+            let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? String(parts[3])
+            result.append(Entry(pid: pid, name: name, cpu: cpu, memoryMB: rss / 1024))
+            if result.count == count { break }
+        }
+        return result
     }
 }
 

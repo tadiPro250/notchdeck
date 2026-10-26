@@ -6,6 +6,14 @@ enum Main {
     static let delegate = AppDelegate()
 
     static func main() {
+        if CommandLine.arguments.contains("--test-media") {
+            NowPlaying.selfTest()
+            return
+        }
+        if CommandLine.arguments.contains("--test-dog") {
+            CatBrain.selfTest()
+            return
+        }
         if CommandLine.arguments.contains("--test-hover") {
             HoverIntent.selfTest()
             return

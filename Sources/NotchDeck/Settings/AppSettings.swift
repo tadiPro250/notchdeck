@@ -131,8 +131,8 @@ enum HoverSensitivity: String, CaseIterable, Identifiable {
 
     var detail: String {
         switch self {
-        case .quick: "Opens almost as soon as the pointer arrives, even if it's still moving a little."
-        case .balanced: "Opens when the pointer rests on the notch for a quarter of a second."
+        case .quick: "Opens almost as soon as the pointer arrives, even while it's still moving."
+        case .balanced: "Opens a moment after the pointer slows down on the notch; passing over it doesn't."
         case .deliberate: "Opens only when the pointer stays put on the notch for about half a second."
         }
     }
@@ -146,9 +146,18 @@ enum HoverSensitivity: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Most the pointer may drift, in points, over `stillWindow` seconds and still count as resting.
-    /// (So the speed it allows is tolerance ÷ window: about 83, 40 and 24 pt/s; 6 pt leaves room
-    /// for the tremor of a resting hand.)
+    /// The fastest the pointer may still be moving, in points a second, when the delay is up.
+    /// Crossing the notch on the way somewhere is several hundred.
+    var maxSpeed: CGFloat {
+        switch self {
+        case .quick: 260
+        case .balanced: 120
+        case .deliberate: 45
+        }
+    }
+
+    /// Drift, in points over `stillWindow` seconds, that counts as a resting hand whatever the
+    /// speed works out at.
     var stillTolerance: CGFloat {
         switch self {
         case .quick: 10
@@ -236,6 +245,9 @@ final class AppSettings: ObservableObject {
     @Published var catPlacement: CatPlacement { didSet { save(catPlacement.rawValue, "catPlacement") } }
     @Published var catPlayfulness: Playfulness { didSet { save(catPlayfulness.rawValue, "catPlayfulness") } }
     @Published var catFeeding: PetFeeding { didSet { save(catFeeding.rawValue, "catFeeding") } }
+    /// The hour the dog goes to bed and the hour it gets up; it sleeps right through in between.
+    @Published var catBedtime: Int { didSet { save(catBedtime, "catBedtime") } }
+    @Published var catWakeTime: Int { didSet { save(catWakeTime, "catWakeTime") } }
 
     // Media
     @Published var visualizer: VisualizerStyle { didSet { save(visualizer.rawValue, "visualizer") } }
@@ -378,6 +390,8 @@ final class AppSettings: ObservableObject {
         // "catPlayful" was an on/off switch before the frequency choice; off stays off.
         catPlayfulness = choice("catPlayfulness", value("catPlayful", true) ? .rarely : .off)
         catFeeding = choice("catFeeding", .hover)
+        catBedtime = value("catBedtime", 23)
+        catWakeTime = value("catWakeTime", 7)
 
         visualizer = choice("visualizer", .bars)
         showLiveActivity = value("showLiveActivity", true)

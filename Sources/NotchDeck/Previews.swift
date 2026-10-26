@@ -140,6 +140,44 @@ enum Previews {
         .padding(20)
         .background(Color(white: 0.25))
         save(cats, name: "d3-cats", size: CGSize(width: 700, height: 150), to: directory)
+
+        // The newer poses, and the dog fat, sick and lonely.
+        let more: [(CatBrain.Pose, CatBrain.Mood, Double)] = [
+            (.lie, .content, 1), (.stretch, .happy, 1), (.sniff, .content, 1), (.scratch, .content, 1),
+            (.bark, .hungry, 1), (.walk, .content, 1.5), (.sick, .sick, 1), (.vomit, .stuffed, 1.3), (.lie, .lonely, 1),
+        ]
+        let poses = HStack(spacing: 14) {
+            ForEach(Array(more.enumerated()), id: \.offset) { index, item in
+                CatFigure(pose: item.0, mood: item.1, color: CatColor.allCases[index % 4], time: 1.3, girth: item.2)
+                    .frame(width: 120, height: 86)
+            }
+        }
+        .padding(16)
+        .background(Color(white: 0.25))
+        save(poses, name: "d4-dog-poses", size: CGSize(width: 1250, height: 120), to: directory)
+
+        // The dog's card, as it hangs over the desktop pet (its window allots 90 pt to it).
+        let card = VStack(spacing: 0) {
+            CatCard(brain: CatBrain(settings: AppSettings(defaults: UserDefaults(suiteName: "notchdeck.previews.card") ?? .standard),
+                                    live: false), name: "Mochi", compact: true)
+                .frame(height: 90)
+        }
+        .padding(20)
+        .background(Color(white: 0.25))
+        .environment(\.colorScheme, .dark)
+        save(card, name: "d5-dog-card", size: CGSize(width: 300, height: 130), to: directory)
+
+        // The dog's tile in the Widgets tab: two tiles wide (150 + 10 + 150) by 150.
+        let tileSettings = AppSettings(defaults: UserDefaults(suiteName: "notchdeck.previews.tile") ?? .standard)
+        tileSettings.catName = "Neo"
+        let tile = CatWidget(brain: CatBrain(settings: tileSettings, live: false), settings: tileSettings)
+            .frame(width: 310, height: 150)
+            .background(RoundedRectangle(cornerRadius: 22).fill(Color.black.opacity(0.6)))
+            .clipShape(RoundedRectangle(cornerRadius: 22))
+            .padding(20)
+            .background(Color(white: 0.25))
+            .environment(\.colorScheme, .dark)
+        save(tile, name: "d6-dog-tile", size: CGSize(width: 350, height: 190), to: directory)
     }
 
     private static func save<V: View>(_ view: V, name: String, size: CGSize, to directory: URL) {
@@ -182,7 +220,8 @@ enum Previews {
         let now = Date()
         calendar.showPreview([
             CalendarEvent(id: "1", title: "Design review", start: now.addingTimeInterval(240),
-                          end: now.addingTimeInterval(3600), isAllDay: false, color: .orange, location: "Room 4B"),
+                          end: now.addingTimeInterval(3600), isAllDay: false, color: .orange, location: "Room 4B",
+                          joinURL: URL(string: "https://meet.google.com/abc-defg-hij")),
             CalendarEvent(id: "2", title: "Lunch with Ayush", start: now.addingTimeInterval(9000),
                           end: now.addingTimeInterval(12600), isAllDay: false, color: .green, location: nil),
         ])
