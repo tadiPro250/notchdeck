@@ -890,6 +890,7 @@ final class DesktopCat {
     /// Whether the last decision was made at night, to wake up with a stretch.
     private var sleptTonight = false
     private var unlockObserver: NSObjectProtocol?
+    private var screenObservers: [NSObjectProtocol] = []
 
     /// The window around the cat in screen mode, at size 1: room for the card above it.
     static let base = CGSize(width: 180, height: 168)
@@ -932,6 +933,19 @@ final class DesktopCat {
             self.poseUntil = Date().addingTimeInterval(seconds)
         }
         // Coming back to the Mac (in the day): it trots over and says hello.
+        // Nobody sees it while the display sleeps: stop ticking until it wakes.
+        let workspace = NSWorkspace.shared.notificationCenter
+        screenObservers.append(workspace.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil,
+                                                     queue: .main) { [weak self] _ in
+            self?.timer?.invalidate()
+            self?.timer = nil
+        })
+        screenObservers.append(workspace.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil,
+                                                     queue: .main) { [weak self] _ in
+            guard let self, self.window != nil else { return }
+            self.lastTick = Date()
+            self.schedule(fast: true)
+        })
         unlockObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
         ) { [weak self] _ in self?.greet() }
