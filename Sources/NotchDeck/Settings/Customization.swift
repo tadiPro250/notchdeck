@@ -51,7 +51,8 @@ struct WidgetItem: Codable, Identifiable, Equatable {
         }
 
         /// Photos are twice as wide as the rest.
-        var isWide: Bool { self == .photo }
+        /// Two tiles wide: a photo, and the dog (it and its card side by side).
+        var isWide: Bool { self == .photo || self == .cat }
     }
 
     var id = UUID()

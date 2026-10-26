@@ -550,26 +550,26 @@ private struct StatsWidget: View {
     }
 }
 
-private struct CatWidget: View {
+struct CatWidget: View {
     @ObservedObject var brain: CatBrain
     @ObservedObject var settings: AppSettings
 
     var body: some View {
-        VStack(spacing: 2) {
+        // Side by side on a double-width tile: the card is wider than a single tile.
+        HStack(spacing: 8) {
             ZStack(alignment: .top) {
                 TimelineView(.animation(minimumInterval: 1 / 20)) { context in
                     CatFigure(pose: brain.pose.travels ? .sit : brain.pose, mood: brain.mood, color: settings.catColor,
                               time: context.date.timeIntervalSinceReferenceDate * 2, girth: brain.girth)
                         .opacity(brain.isAway ? 0.25 : 1)
                 }
-                // Smaller than on the desktop, so the dog and its whole card fit the 150 pt tile.
-                .frame(width: 78, height: 56)
+                .frame(width: 100, height: 72)
                 .onTapGesture { brain.pet() }
                 CatHearts(since: brain.heartsAt)
             }
-            CatCard(brain: brain, name: settings.catName).scaleEffect(0.9).frame(height: 78)
+            CatCard(brain: brain, name: settings.catName)
         }
-        .padding(.top, 4)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

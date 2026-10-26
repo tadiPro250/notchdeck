@@ -166,6 +166,18 @@ enum Previews {
         .background(Color(white: 0.25))
         .environment(\.colorScheme, .dark)
         save(card, name: "d5-dog-card", size: CGSize(width: 300, height: 130), to: directory)
+
+        // The dog's tile in the Widgets tab: two tiles wide (150 + 10 + 150) by 150.
+        let tileSettings = AppSettings(defaults: UserDefaults(suiteName: "notchdeck.previews.tile") ?? .standard)
+        tileSettings.catName = "Neo"
+        let tile = CatWidget(brain: CatBrain(settings: tileSettings, live: false), settings: tileSettings)
+            .frame(width: 310, height: 150)
+            .background(RoundedRectangle(cornerRadius: 22).fill(Color.black.opacity(0.6)))
+            .clipShape(RoundedRectangle(cornerRadius: 22))
+            .padding(20)
+            .background(Color(white: 0.25))
+            .environment(\.colorScheme, .dark)
+        save(tile, name: "d6-dog-tile", size: CGSize(width: 350, height: 190), to: directory)
     }
 
     private static func save<V: View>(_ view: V, name: String, size: CGSize, to directory: URL) {
