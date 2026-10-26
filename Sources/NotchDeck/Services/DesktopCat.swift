@@ -980,7 +980,18 @@ final class DesktopCat {
         window = panel
         relayout(moveHome: true)
         panel.orderFrontRegardless()
-        timer = Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] _ in self?.tick() }
+        schedule(fast: true)
+    }
+
+    /// 30 checks a second while it moves, plays or has the pointer on it; 8 while it just sits
+    /// or sleeps, which is plenty to notice a pointer arriving and saves the wake-ups.
+    private func schedule(fast: Bool) {
+        let interval: TimeInterval = fast ? 1 / 30 : 1 / 8
+        if let timer, abs(timer.timeInterval - interval) < 0.001 { return }
+        timer?.invalidate()
+        let next = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(next, forMode: .common)
+        timer = next
     }
 
     private func stop() {
@@ -1015,13 +1026,14 @@ final class DesktopCat {
         let size = windowSize(screen)
         let s = catScale(screen)
         let bottom = feet ?? floor(screen)
-        if onNotch {
-            // The cat is at the top of the window, the card below it.
-            let top = bottom + Self.figure.height * s
-            window.setFrameOrigin(CGPoint(x: x - size.width / 2, y: top - size.height))
-        } else {
-            window.setFrameOrigin(CGPoint(x: x - size.width / 2, y: bottom - 4 * s))
-        }
+        // The cat is at the top of the window on the notch (the card below it), at the bottom
+        // on the screen.
+        let origin = onNotch ? CGPoint(x: x - size.width / 2, y: bottom + Self.figure.height * s - size.height)
+                             : CGPoint(x: x - size.width / 2, y: bottom - 4 * s)
+        // Moving a window costs the window server a redraw: only when it actually moved.
+        let current = window.frame.origin
+        guard abs(current.x - origin.x) > 0.25 || abs(current.y - origin.y) > 0.25 else { return }
+        window.setFrameOrigin(origin)
     }
 
     /// Where the drawn cat is on screen, for hit-testing the pointer.
@@ -1034,6 +1046,11 @@ final class DesktopCat {
 
     private func tick() {
         guard let window, let screen else { return }
+        defer {
+            let near = catRect(screen).insetBy(dx: -60, dy: -60).contains(NSEvent.mouseLocation)
+            schedule(fast: brain.pose.travels || playUntil != nil || feet != nil || near || state.hovering
+                || state.showCard || [.eat, .vomit].contains(brain.pose))
+        }
         // At the vet: off the screen until it's back, then it walks in from the edge.
         if brain.isAway {
             if window.isVisible { window.orderOut(nil); endPlay() }
@@ -1048,7 +1065,8 @@ final class DesktopCat {
             place()
         }
         let now = Date()
-        let dt = min(now.timeIntervalSince(lastTick), 0.1)
+        // (Up to an eighth of a second between ticks while it rests.)
+        let dt = min(now.timeIntervalSince(lastTick), 0.15)
         lastTick = now
 
         // Let the mouse through except over the pet itself, or the card while it's open.
@@ -1310,7 +1328,9 @@ private struct DesktopCatView: View {
 
     private func cat(_ scale: CGFloat) -> some View {
         ZStack(alignment: .top) {
-            TimelineView(.animation(minimumInterval: 1 / 30)) { context in
+            // Smooth while it moves; a sitting or sleeping dog (breathing, wagging, blinking) looks
+            // the same at 12 frames a second and costs half as much.
+            TimelineView(.animation(minimumInterval: brain.pose.travels || state.playfulSince != nil ? 1 / 24 : 1 / 12)) { context in
                 let playing = state.playfulSince != nil
                 let t = context.date.timeIntervalSinceReferenceDate
                     * (brain.pose.travels ? (playing ? 10 : 7) * brain.pace : 2)
