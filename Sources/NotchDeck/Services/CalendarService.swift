@@ -40,11 +40,21 @@ struct CalendarEvent: Identifiable, Equatable {
                     if entry.host == "zoom.us", !["/j/", "/my/", "/w/", "/s/"].contains(where: url.path.lowercased().hasPrefix) {
                         continue
                     }
-                    return url
+                    return secure(url)
                 }
             }
         }
         return nil
+    }
+
+    /// Meeting links carry IDs and passcodes: an http:// one is opened over https:// instead, so
+    /// they never travel in the clear (every one of these services serves https).
+    private static func secure(_ url: URL) -> URL {
+        guard url.scheme?.lowercased() == "http", var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+        parts.scheme = "https"
+        return parts.url ?? url
     }
 }
 
