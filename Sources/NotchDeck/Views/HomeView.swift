@@ -215,7 +215,8 @@ struct NowPlayingCard: View {
                         .foregroundStyle(look.theme.secondaryText)
                         .lineLimit(1)
                     if lyrics.lines.isEmpty {
-                        Text(track.appName.uppercased())
+                        // "Watching" for a film or a video; just the app for songs and podcasts.
+                        Text(track.kind == .video ? "WATCHING · \(track.appName.uppercased())" : track.appName.uppercased())
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(look.accent.opacity(0.8))
                     } else {

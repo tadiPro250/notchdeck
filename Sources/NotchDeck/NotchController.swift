@@ -384,6 +384,8 @@ final class NotchController {
     /// True while a menu (a picker's pop-up, a context menu) is open: the pointer is on the menu,
     /// outside the panel, and the panel must not fold away under it.
     private var menuTracking = false
+    /// Bumped each time a menu opens, so a late reset from an earlier menu can't clear it.
+    private var menuGeneration = 0
     private var menuObservers: [NSObjectProtocol] = []
 
     /// Shared by every display's panel.
@@ -441,14 +443,20 @@ final class NotchController {
         menuObservers.append(center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil,
                                                 queue: .main) { [weak self] _ in
             guard let self, self.model.isExpanded else { return }
+            self.menuGeneration += 1
             self.menuTracking = true
             self.engaged = true
             self.cancelPending()
         })
         menuObservers.append(center.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil,
                                                 queue: .main) { [weak self] _ in
-            // A moment's grace for the pointer to come back from where the menu was.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self?.menuTracking = false }
+            // A moment's grace for the pointer to come back from where the menu was, unless
+            // another menu has opened since.
+            guard let generation = self?.menuGeneration else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                guard let self, self.menuGeneration == generation else { return }
+                self.menuTracking = false
+            }
         })
     }
 
@@ -879,7 +887,7 @@ enum HoverIntent {
                     }
                 }
                 let verdict = opened.map { "opens at \(Int($0 * 1000)) ms" } ?? "stays closed"
-                print("  \((opened != nil) == expected(sensitivity) ? "ok  " : "FAIL") \(name): \(verdict)")
+                print("  \(SelfTest.mark((opened != nil) == expected(sensitivity))) \(name): \(verdict)")
             }
         }
     }

@@ -21,6 +21,10 @@ static GetClientFn getClient;
 static ClientBundleFn clientBundle;
 static ClientBundleFn clientParentBundle;
 static NSString *lastArtworkHash;
+// Reports can overlap (several notifications in a burst) and their callbacks finish in any
+// order: each gets a number, and one finishing after a newer one has been sent is dropped.
+static unsigned long reportSequence;
+static unsigned long lastEmittedSequence;
 
 static void load(void) {
     mr = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_NOW);
@@ -49,9 +53,12 @@ static NSString *sha(NSData *data) {
 
 static void report(void) {
     dispatch_queue_t q = dispatch_get_main_queue();
+    unsigned long sequence = ++reportSequence;
     getInfo(q, ^(NSDictionary *info) {
         getPlaying(q, ^(Boolean playing) {
             void (^finish)(NSString *, NSString *) = ^(NSString *bundle, NSString *parent) {
+                if (sequence < lastEmittedSequence) return;
+                lastEmittedSequence = sequence;
                 NSMutableDictionary *out = [NSMutableDictionary dictionary];
                 out[@"playing"] = @(playing);
                 if (bundle) out[@"bundle"] = bundle;

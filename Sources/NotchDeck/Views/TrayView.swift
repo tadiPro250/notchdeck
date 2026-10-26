@@ -72,7 +72,7 @@ private struct TrayTile: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            Image(nsImage: thumbnail.value ?? NSWorkspace.shared.icon(forFile: url.path))
+            Image(nsImage: thumbnail.value ?? IconCache.icon(forFile: url.path))
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 54, height: 54)

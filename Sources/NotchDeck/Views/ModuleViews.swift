@@ -42,9 +42,8 @@ struct CalendarTabView: View {
                         ScrollView(.vertical, showsIndicators: false) {
                             VStack(spacing: 6) {
                                 ForEach(calendar.events) { event in
-                                    EventRow(event: event, onJoin: { calendar.join(event) })
-                                        .onTapGesture { calendar.open(event) }
-                                        .help("Open in Calendar")
+                                    EventRow(event: event, onOpen: { calendar.open(event) },
+                                             onJoin: { calendar.join(event) })
                                 }
                             }
                         }
@@ -116,22 +115,32 @@ private struct WeekStrip: View {
 
 private struct EventRow: View {
     let event: CalendarEvent
+    var onOpen: () -> Void = {}
     var onJoin: () -> Void = {}
     @Environment(\.look) private var look
 
     var body: some View {
         HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 2).fill(event.color).frame(width: 4)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(event.title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                Text(EventTime.describe(event) + (event.location.map { "  ·  \($0)" } ?? ""))
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(look.theme.secondaryText)
-                    .lineLimit(1)
+            // The colour bar, title and time open the event; the Join button beside them is a
+            // separate control, so joining never opens Calendar too.
+            Button(action: onOpen) {
+                HStack(spacing: 10) {
+                    RoundedRectangle(cornerRadius: 2).fill(event.color).frame(width: 4)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(event.title)
+                            .font(.system(size: 12, weight: .semibold))
+                            .lineLimit(1)
+                        Text(EventTime.describe(event) + (event.location.map { "  ·  \($0)" } ?? ""))
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(look.theme.secondaryText)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
             }
-            Spacer(minLength: 0)
+            .buttonStyle(.plain)
+            .help("Open in Calendar")
             if event.joinURL != nil {
                 Button(action: onJoin) {
                     Label("Join", systemImage: "video.fill")
@@ -156,7 +165,6 @@ private struct EventRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(look.theme.surface))
-        .contentShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -375,7 +383,7 @@ private struct ClipCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
         case .file(let url):
             VStack(alignment: .leading, spacing: 4) {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                Image(nsImage: IconCache.icon(forFile: url.path))
                     .resizable()
                     .frame(width: 40, height: 40)
                 Text(url.lastPathComponent)

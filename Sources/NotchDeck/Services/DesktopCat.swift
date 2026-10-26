@@ -156,7 +156,16 @@ final class CatBrain: ObservableObject {
     @Published private(set) var heartsAt: Date?
 
     /// Something worth a card in the notch (hungry, threw up, lonely, sick, back from the vet).
-    var onAlert: ((CatAlert) -> Void)?
+    /// Alerts raised before it's set (while the app launches) wait and are told when it is.
+    var onAlert: ((CatAlert) -> Void)? {
+        didSet {
+            guard let onAlert, !pendingAlerts.isEmpty else { return }
+            let waiting = pendingAlerts
+            pendingAlerts = []
+            waiting.forEach(onAlert)
+        }
+    }
+    private var pendingAlerts: [CatAlert] = []
     /// The dog was woken or interrupted and should stay as it is for this long before deciding
     /// what to do next (DesktopCat moves it).
     var onInterrupt: ((TimeInterval) -> Void)?
@@ -165,11 +174,13 @@ final class CatBrain: ObservableObject {
     private let settings: AppSettings
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
-    /// Awake-time (seconds of `CLOCK_UPTIME_RAW`) at the last update, and the boot it belongs to.
+    /// Awake-time (seconds of `CLOCK_UPTIME_RAW`) at the last update.
     private var lastUptime: Double
-    private var lastBoot: Double
-    /// True while the Mac or its display sleeps.
-    private var paused = false
+    /// The Mac, or just its display, is asleep. A background wake (Power Nap, a download) wakes
+    /// the system but not the display, and the dog stays paused through it.
+    private var systemAsleep = false
+    private var displayAsleep = false
+    private var paused: Bool { systemAsleep || displayAsleep }
     private var announced = Set<String>()
     fileprivate var lastPets: [Date] = []
 
@@ -182,39 +193,43 @@ final class CatBrain: ObservableObject {
         self.settings = settings
         let store = live ? UserDefaults.standard : UserDefaults(suiteName: "com.premprateek.notchdeck.previews") ?? .standard
         defaults = store
+        // Everything is saved as one record, so a save cut short can't leave half of it behind.
+        // (Older versions kept a key each; read those once.)
+        let saved = live ? store.dictionary(forKey: "cat.state") : nil
         func stored(_ key: String, _ fallback: Double, preview: Double) -> Double {
-            live ? store.object(forKey: key) as? Double ?? fallback : preview
+            guard live else { return preview }
+            return saved?[key] as? Double ?? store.object(forKey: "cat." + key) as? Double ?? fallback
         }
-        fullness = stored("cat.fullness", 0.8, preview: 0.62)
-        affection = stored("cat.affection", 0.6, preview: 0.8)
-        weight = stored("cat.weight", 0.5, preview: 0.5)
-        health = stored("cat.health", 1, preview: 1)
-        stomach = stored("cat.stomach", 0, preview: 0)
-        awayUntil = live ? store.object(forKey: "cat.awayUntil") as? Date : nil
-        vetNote = live ? store.string(forKey: "cat.vetNote") : nil
-        lastUptime = live ? store.object(forKey: "cat.uptime") as? Double ?? Self.uptime() : Self.uptime()
-        lastBoot = live ? store.object(forKey: "cat.boot") as? Double ?? Self.bootTime() : Self.bootTime()
+        fullness = stored("fullness", 0.8, preview: 0.62)
+        affection = stored("affection", 0.6, preview: 0.8)
+        weight = stored("weight", 0.5, preview: 0.5)
+        health = stored("health", 1, preview: 1)
+        stomach = stored("stomach", 0, preview: 0)
+        awayUntil = live ? (saved.map { $0["awayUntil"] as? Date } ?? store.object(forKey: "cat.awayUntil") as? Date) : nil
+        vetNote = live ? (saved.map { $0["vetNote"] as? String } ?? store.string(forKey: "cat.vetNote")) : nil
+        // Time only passes for the dog while NotchDeck runs and the Mac is awake: whatever
+        // happened while the app was closed (asleep, display off, shut down, or awake) doesn't
+        // count, so there is never a catch-up to get wrong.
+        lastUptime = Self.uptime()
         guard live else { return }
         announced = Set(defaults.stringArray(forKey: "cat.announced") ?? [])
         decay()
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.decay() }
         let center = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
-            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.decay()
-                self?.paused = true
-            })
-        }
-        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+        func observe(_ name: Notification.Name, _ change: @escaping (CatBrain) -> Void) {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 guard let self else { return }
-                // Nothing happened to it while the Mac slept: start counting from now.
-                self.paused = false
+                // Count up to now, change state, and start counting again from now.
+                self.decay()
+                change(self)
                 self.lastUptime = Self.uptime()
-                self.lastBoot = Self.bootTime()
                 self.save()
             })
         }
+        observe(NSWorkspace.willSleepNotification) { $0.systemAsleep = true }
+        observe(NSWorkspace.didWakeNotification) { $0.systemAsleep = false }
+        observe(NSWorkspace.screensDidSleepNotification) { $0.displayAsleep = true }
+        observe(NSWorkspace.screensDidWakeNotification) { $0.displayAsleep = false }
     }
 
     // MARK: Reading the dog
@@ -386,8 +401,8 @@ final class CatBrain: ObservableObject {
         if fullness < 0.3 { advice.append("don't let it go hungry") }
         vetNote = advice.isEmpty ? nil : "The vet says: " + advice.joined(separator: ", ") + "."
         announced.subtract(["sick"])
-        onAlert?(CatAlert(symbol: "cross.case.fill", title: "\(settings.catName) is back from the vet",
-                          detail: vetNote ?? "All better", tint: .green))
+        emit(CatAlert(symbol: "cross.case.fill", title: "\(settings.catName) is back from the vet",
+                      detail: vetNote ?? "All better", tint: .green))
         save()
     }
 
@@ -395,22 +410,26 @@ final class CatBrain: ObservableObject {
 
     private func decay() {
         let now = Self.uptime()
-        let boot = Self.bootTime()
-        // Seconds the Mac was awake since the last update. A different boot means it was shut
-        // down in between, which doesn't count either.
-        // (The recorded boot time drifts by seconds when the clock syncs; a reboot moves it by hours.)
-        var hours = abs(boot - lastBoot) < 120 ? max(0, now - lastUptime) / 3600 : 0
-        if paused { hours = 0 }
+        // Seconds the Mac was awake since the last update (the clock stops in system sleep).
+        let hours = paused ? 0 : max(0, now - lastUptime) / 3600
         lastUptime = now
-        lastBoot = boot
         if let back = awayUntil, back <= Date() { comeHome() }
-        if hours > 0, !isAway { live(hours: hours) }
+        if hours > 0, !isAway {
+            // In steps of at most a quarter hour, each at its own time of day, so getting hungry
+            // or nightfall partway through changes only what comes after it.
+            var remaining = hours
+            while remaining > 1e-9 {
+                let step = min(remaining, 0.25)
+                remaining -= step
+                live(hours: step, at: Date().addingTimeInterval(-remaining * 3600))
+            }
+        }
         save()
         announce()
     }
 
-    fileprivate func live(hours h: Double) {
-        let asleep = isNight || pose == .sleep
+    fileprivate func live(hours h: Double, at date: Date = Date()) {
+        let asleep = Self.isNight(date, bedtime: settings.catBedtime, wake: settings.catWakeTime) || pose == .sleep
         fullness = max(0, fullness - h * Self.fullnessPerHour * (asleep ? 0.4 : 1))
         affection = max(0, affection - h * Self.affectionPerHour * (asleep ? 0.1 : 1))
         // Digesting what it overate.
@@ -451,14 +470,18 @@ final class CatBrain: ObservableObject {
             announced.remove("hungry")
         }
         if stomach <= 0.05 { announced.remove("stuffed") }
+        // Each warning re-arms once the dog is clearly over it (a little past the line, so it
+        // doesn't repeat while hovering at the edge).
         if affection < 0.15 {
             alertOnce("lonely", CatAlert(symbol: "heart.slash.fill", title: "\(name) misses you",
                                          detail: "Click it to pet it; a lonely dog gets ill", tint: .pink))
+        } else if affection >= 0.25 {
+            announced.remove("lonely")
         }
         if isOverweight {
             alertOnce("heavy", CatAlert(symbol: "scalemass.fill", title: "\(name) is getting heavy",
                                         detail: "Feed it only when it's hungry and let it play", tint: .orange))
-        } else if weight < 0.6 {
+        } else if weight < 0.62 {
             announced.remove("heavy")
         }
         if isSick {
@@ -471,23 +494,28 @@ final class CatBrain: ObservableObject {
     }
 
     private func alertOnce(_ key: String, _ alert: CatAlert) {
-        // Nobody listening yet (still launching): tell it on the next check instead.
-        guard !announced.contains(key), let onAlert else { return }
+        guard !announced.contains(key) else { return }
         announced.insert(key)
         defaults.set(Array(announced), forKey: "cat.announced")
-        onAlert(alert)
+        emit(alert)
+    }
+
+    private func emit(_ alert: CatAlert) {
+        if let onAlert { onAlert(alert) } else { pendingAlerts.append(alert) }
     }
 
     private func save() {
-        defaults.set(fullness, forKey: "cat.fullness")
-        defaults.set(affection, forKey: "cat.affection")
-        defaults.set(weight, forKey: "cat.weight")
-        defaults.set(health, forKey: "cat.health")
-        defaults.set(stomach, forKey: "cat.stomach")
-        defaults.set(awayUntil, forKey: "cat.awayUntil")
-        defaults.set(vetNote, forKey: "cat.vetNote")
-        defaults.set(lastUptime, forKey: "cat.uptime")
-        defaults.set(lastBoot, forKey: "cat.boot")
+        var state: [String: Any] = ["fullness": fullness, "affection": affection, "weight": weight,
+                                    "health": health, "stomach": stomach]
+        if let awayUntil { state["awayUntil"] = awayUntil }
+        if let vetNote { state["vetNote"] = vetNote }
+        defaults.set(state, forKey: "cat.state")
+    }
+
+    /// The next wake-up time after `date`, when the dog gets up.
+    func nextWake(after date: Date = Date()) -> Date {
+        Calendar.current.nextDate(after: date, matching: DateComponents(hour: settings.catWakeTime, minute: 0),
+                                  matchingPolicy: .nextTime) ?? date.addingTimeInterval(600)
     }
 
     /// `--test-dog`: lives through some days of care and neglect and prints how the dog ends up.
@@ -507,7 +535,7 @@ final class CatBrain: ObservableObject {
             let verdict = String(format: "food %.2f love %.2f weight %.2f (%@) health %.2f (%@) mood %@",
                                  brain.fullness, brain.affection, brain.weight, brain.weightText, brain.health,
                                  brain.healthText, brain.mood.title)
-            print("\(expect(brain) ? "ok  " : "FAIL") \(name) after \(days) days: \(verdict)")
+            print("\(SelfTest.mark(expect(brain))) \(name) after \(days) days: \(verdict)")
         }
         // A waking day is 16 hours here.
         run("fed when hungry, petted every 2 h", days: 14, expect: { !$0.isSick && !$0.isOverweight && $0.mood.isGood }) { b, h in
@@ -520,7 +548,8 @@ final class CatBrain: ObservableObject {
             if h % 2 == 0 { b.pet() }
             b.exercised(); b.exercised(); b.exercised()
         }
-        run("overweight, then fed properly and played with", days: 10, expect: { !$0.isOverweight && !$0.isSick }) { b, h in
+        run("overweight, then fed properly and played with", days: 10,
+            expect: { (0.35...0.65).contains($0.weight) && !$0.isSick }) { b, h in
             if h == 0, b.weight == 0.5 { b.weight = 0.8 }
             if b.isHungry { b.feed() }
             if h % 2 == 0 { b.pet() }
@@ -539,23 +568,14 @@ final class CatBrain: ObservableObject {
         let b = CatBrain(settings: AppSettings(defaults: UserDefaults(suiteName: "notchdeck.test-dog") ?? .standard), live: false)
         b.fullness = 0.9; b.stomach = 0
         b.feed(); b.feed()
-        print("\(b.stomach == 0 && b.health < 1 ? "ok  " : "FAIL") two meals on a full stomach: threw up (health \(String(format: "%.2f", b.health)))")
+        print("\(SelfTest.mark(b.stomach == 0 && b.health < 1)) two meals on a full stomach: threw up (health \(String(format: "%.2f", b.health)))")
         let night = Calendar.current.date(bySettingHour: 2, minute: 0, second: 0, of: Date())!
         let noon = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: Date())!
-        print("\(isNight(night, bedtime: 23, wake: 7) && !isNight(noon, bedtime: 23, wake: 7) ? "ok  " : "FAIL") 02:00 is night, 12:00 isn't")
+        print("\(SelfTest.mark(isNight(night, bedtime: 23, wake: 7) && !isNight(noon, bedtime: 23, wake: 7))) 02:00 is night, 12:00 isn't")
     }
 
     /// Seconds the Mac has been awake since boot (stops while it sleeps).
     static func uptime() -> Double { Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1e9 }
-
-    /// When the Mac booted, to tell a restart from a long sleep.
-    static func bootTime() -> Double {
-        var boot = timeval()
-        var size = MemoryLayout<timeval>.size
-        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
-        guard sysctl(&mib, 2, &boot, &size, nil, 0) == 0 else { return 0 }
-        return Double(boot.tv_sec) + Double(boot.tv_usec) / 1e6
-    }
 }
 
 // MARK: Drawing
@@ -1238,6 +1258,8 @@ final class DesktopCat {
         if brain.isNight {
             sleptTonight = true
             rest(.sleep, 600...600)
+            // Not past wake-up time, so it gets up on the hour, not up to ten minutes late.
+            poseUntil = min(poseUntil, brain.nextWake())
             return
         }
         // Morning: a long stretch before anything else.

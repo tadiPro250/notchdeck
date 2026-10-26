@@ -892,7 +892,7 @@ private struct ModulesPane: View {
             ForEach(settings.quickItems) { item in
                 Divider()
                 HStack(spacing: 10) {
-                    Image(nsImage: NSWorkspace.shared.icon(forFile: item.path)).resizable().frame(width: 20, height: 20)
+                    Image(nsImage: IconCache.icon(forFile: item.path)).resizable().frame(width: 20, height: 20)
                     Text(item.name).font(.system(size: 13))
                     if !item.exists { Text("missing").font(.system(size: 11)).foregroundStyle(.red) }
                     Spacer()

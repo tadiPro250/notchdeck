@@ -21,6 +21,16 @@ enum MediaPlayer: String, CaseIterable {
     }
 }
 
+/// What's playing, as far as the notch cares.
+enum MediaKind: Equatable {
+    /// A song: track buttons, lyrics, the record player on the lock screen.
+    case music
+    /// A film, a show, a video in a browser tab: skip buttons, "Watching".
+    case video
+    /// A podcast or an audiobook: skip buttons, nothing else.
+    case spoken
+}
+
 struct Track: Equatable {
     var title: String
     var artist: String
@@ -35,9 +45,9 @@ struct Track: Equatable {
     var appName: String
     var artworkURL: String?
     var fetchedAt: Date
-    /// A song, as opposed to a film, a show or a video in a browser tab. Only songs get the
-    /// record player on the lock screen and a lyrics search.
-    var isMusic = true
+    var kind: MediaKind = .music
+    /// Only songs get the record player on the lock screen and a lyrics search.
+    var isMusic: Bool { kind == .music }
 
     var identity: String { "\(bundleID ?? appName)|\(title)|\(artist)|\(album)" }
 
@@ -127,7 +137,7 @@ final class NowPlaying: ObservableObject {
         let next = Track(title: title, artist: update.artist ?? "", album: update.album ?? "",
                          duration: update.duration ?? 0, position: position, isPlaying: update.playing,
                          player: player, bundleID: update.bundleID, appName: appName,
-                         artworkURL: nil, fetchedAt: Date(), isMusic: Self.isMusic(update))
+                         artworkURL: nil, fetchedAt: Date(), kind: Self.kind(update))
         setTrack(next)
         if let data = update.artwork, let image = NSImage(data: data) {
             artworkKey = next.identity
@@ -293,6 +303,11 @@ final class NowPlaying: ObservableObject {
         "com.firecore.infuse", "tv.plex.desktop", "com.amazon.aiv.AIVApp", "com.disney.disneyplus", "com.movist.MovistPro",
         "com.eltima.elmedia-video", "io.mpv", "com.apple.FaceTime",
     ]
+    /// Podcast and audiobook players: never songs, whatever the episode's length.
+    static let spokenApps: Set<String> = [
+        "com.apple.podcasts", "fm.overcast.overcast", "au.com.shiftyjelly.podcasts", "co.supertop.Castro",
+        "com.apple.iBooksX", "com.audible.mac",
+    ]
     static let browsers: [String] = [
         "com.apple.Safari", "com.apple.WebKit", "com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac",
         "org.mozilla.firefox", "company.thebrowser", "com.vivaldi.Vivaldi", "com.operasoftware.Opera",
@@ -304,34 +319,38 @@ final class NowPlaying: ObservableObject {
     /// with a title. So a tab counts as music only with the marks of a song: an artist AND an
     /// album (Spotify, YouTube Music and Apple Music on the web all send both), or a YouTube
     /// "– Topic" / VEVO channel. Anything over 15 minutes outside a music app is a video.
-    static func isMusic(_ u: MediaRemoteBridge.Update) -> Bool {
+    static func kind(_ u: MediaRemoteBridge.Update) -> MediaKind {
         let type = u.mediaType?.lowercased() ?? ""
-        if type.contains("video") || type.contains("movie") { return false }
+        if type.contains("video") || type.contains("movie") { return .video }
         let bundle = u.bundleID ?? "", parent = u.parentBundleID ?? ""
+        if type.contains("podcast") || type.contains("audiobook") || spokenApps.contains(bundle) || spokenApps.contains(parent) {
+            return .spoken
+        }
         let inBrowser = browsers.contains { bundle.hasPrefix($0) || parent.hasPrefix($0) }
         // A browser may call any tab "music"; only the tab's own details are trusted there.
-        if !inBrowser, type.contains("music") || u.isMusicApp == true { return true }
-        if musicApps.contains(bundle) || musicApps.contains(parent) { return true }
-        if videoApps.contains(bundle) || videoApps.contains(parent) { return false }
+        let saysMusic = type.contains("music") || u.isMusicApp == true
+        if !inBrowser && saysMusic { return .music }
+        if musicApps.contains(bundle) || musicApps.contains(parent) { return .music }
+        if videoApps.contains(bundle) || videoApps.contains(parent) { return .video }
         let artist = (u.artist ?? "").trimmingCharacters(in: .whitespaces)
         let album = (u.album ?? "").trimmingCharacters(in: .whitespaces)
         let duration = u.duration ?? 0
-        if duration > 15 * 60 { return false }
+        if duration > 15 * 60 { return .video }
         if inBrowser {
-            if artist.hasSuffix("- Topic") || artist.uppercased().hasSuffix("VEVO") { return true }
-            return !artist.isEmpty && !album.isEmpty
+            if artist.hasSuffix("- Topic") || artist.uppercased().hasSuffix("VEVO") { return .music }
+            return !artist.isEmpty && !album.isEmpty ? .music : .video
         }
         // Some other app: a song has an artist and a song's length.
-        return !artist.isEmpty && (duration == 0 || duration >= 30)
+        return !artist.isEmpty && (duration == 0 || duration >= 30) ? .music : .video
     }
 
     /// `--test-media`: what counts as a song.
     static func selfTest() {
         func u(_ bundle: String, parent: String? = nil, artist: String = "", album: String = "", duration: Double = 240,
-               type: String? = nil) -> MediaRemoteBridge.Update {
+               type: String? = nil, musicApp: Bool? = nil) -> MediaRemoteBridge.Update {
             var x = MediaRemoteBridge.Update()
             x.bundleID = bundle; x.parentBundleID = parent; x.title = "Title"; x.artist = artist; x.album = album
-            x.duration = duration; x.mediaType = type
+            x.duration = duration; x.mediaType = type; x.isMusicApp = musicApp
             return x
         }
         let cases: [(String, Bool, MediaRemoteBridge.Update)] = [
@@ -350,10 +369,18 @@ final class NowPlaying: ObservableObject {
             ("unknown app, 2-hour mix", false, u("com.example.player", artist: "DJ", duration: 7200)),
             ("podcast episode", false, u("com.apple.podcasts", artist: "The Daily", duration: 1800,
                                          type: "kMRMediaRemoteNowPlayingInfoTypeAudio")),
+            ("short podcast episode (10 min)", false, u("com.apple.podcasts", artist: "Up First", duration: 600,
+                                                        type: "kMRMediaRemoteNowPlayingInfoTypeAudio")),
+            ("Overcast episode", false, u("fm.overcast.overcast", artist: "A Show", duration: 900)),
+            ("browser video that says it's a music app", false,
+             u("com.google.Chrome", artist: "Channel", duration: 500, musicApp: true)),
+            ("Music app that says it's a music app", true, u("com.example.player", artist: "A", musicApp: true)),
         ]
+        print("\(SelfTest.mark(kind(u("com.apple.podcasts", artist: "x", duration: 600)) == .spoken)) podcasts are spoken word")
+        print("\(SelfTest.mark(kind(u("com.google.Chrome", duration: 3200)) == .video)) Netflix in Chrome is a video")
         for (name, expected, update) in cases {
-            let got = isMusic(update)
-            print("\(got == expected ? "ok  " : "FAIL") \(name): \(got ? "song" : "video")")
+            let got = kind(update) == .music
+            print("\(SelfTest.mark(got == expected)) \(name): \(got ? "song" : "video")")
         }
     }
 
