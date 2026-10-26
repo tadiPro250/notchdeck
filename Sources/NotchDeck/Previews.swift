@@ -155,6 +155,17 @@ enum Previews {
         .padding(16)
         .background(Color(white: 0.25))
         save(poses, name: "d4-dog-poses", size: CGSize(width: 1250, height: 120), to: directory)
+
+        // The dog's card, as it hangs over the desktop pet (its window allots 90 pt to it).
+        let card = VStack(spacing: 0) {
+            CatCard(brain: CatBrain(settings: AppSettings(defaults: UserDefaults(suiteName: "notchdeck.previews.card") ?? .standard),
+                                    live: false), name: "Mochi", compact: true)
+                .frame(height: 90)
+        }
+        .padding(20)
+        .background(Color(white: 0.25))
+        .environment(\.colorScheme, .dark)
+        save(card, name: "d5-dog-card", size: CGSize(width: 300, height: 130), to: directory)
     }
 
     private static func save<V: View>(_ view: V, name: String, size: CGSize, to directory: URL) {

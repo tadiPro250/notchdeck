@@ -718,11 +718,13 @@ final class NotchController {
         return CGRect(x: rect.minX, y: rect.minY - 24, width: rect.width, height: rect.height + 24)
     }
 
-    /// The pointer pressed against the top of the screen above the open panel: it's still "in"
-    /// the notch (the edge stops it going any higher), so that never closes it.
+    /// The pointer pressed against the top of the screen over the notch: it's still "in" the
+    /// notch (the edge stops it going any higher), so that never closes it. Only over the notch:
+    /// along the rest of the top edge it's on its way to the menu bar.
     private func atTopEdge(_ point: CGPoint) -> Bool {
-        let rect = model.screenRect
-        return point.y >= model.geometry.screenFrame.maxY - 2 && point.x >= rect.minX - 14 && point.x <= rect.maxX + 14
+        let frame = model.geometry.screenFrame
+        let half = model.geometry.notchSize.width / 2 + Self.sideMargin + 8
+        return point.y >= frame.maxY - 2 && abs(point.x - frame.midX) <= half
     }
 
     private func mouseMoved() {

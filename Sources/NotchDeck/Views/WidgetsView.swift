@@ -562,13 +562,14 @@ private struct CatWidget: View {
                               time: context.date.timeIntervalSinceReferenceDate * 2, girth: brain.girth)
                         .opacity(brain.isAway ? 0.25 : 1)
                 }
-                .frame(width: 100, height: 72)
+                // Smaller than on the desktop, so the dog and its whole card fit the 150 pt tile.
+                .frame(width: 78, height: 56)
                 .onTapGesture { brain.pet() }
                 CatHearts(since: brain.heartsAt)
             }
-            CatCard(brain: brain, name: settings.catName).scaleEffect(0.95)
+            CatCard(brain: brain, name: settings.catName).scaleEffect(0.9).frame(height: 78)
         }
-        .padding(.top, 6)
+        .padding(.top, 4)
     }
 }
 

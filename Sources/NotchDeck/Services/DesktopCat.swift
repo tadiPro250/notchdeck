@@ -397,7 +397,8 @@ final class CatBrain: ObservableObject {
         let boot = Self.bootTime()
         // Seconds the Mac was awake since the last update. A different boot means it was shut
         // down in between, which doesn't count either.
-        var hours = abs(boot - lastBoot) < 2 ? max(0, now - lastUptime) / 3600 : 0
+        // (The recorded boot time drifts by seconds when the clock syncs; a reboot moves it by hours.)
+        var hours = abs(boot - lastBoot) < 120 ? max(0, now - lastUptime) / 3600 : 0
         if paused { hours = 0 }
         lastUptime = now
         lastBoot = boot
@@ -447,6 +448,7 @@ final class CatBrain: ObservableObject {
         } else {
             announced.remove("hungry")
         }
+        if stomach <= 0.05 { announced.remove("stuffed") }
         if affection < 0.15 {
             alertOnce("lonely", CatAlert(symbol: "heart.slash.fill", title: "\(name) misses you",
                                          detail: "Click it to pet it; a lonely dog gets ill", tint: .pink))
@@ -876,7 +878,7 @@ final class DesktopCat {
     private var unlockObserver: NSObjectProtocol?
 
     /// The window around the cat in screen mode, at size 1: room for the card above it.
-    static let base = CGSize(width: 180, height: 150)
+    static let base = CGSize(width: 180, height: 168)
     /// The cat drawing's own box.
     static let figure = CGSize(width: 100, height: 72)
 
@@ -940,7 +942,7 @@ final class DesktopCat {
         let s = catScale(screen)
         if onNotch {
             // The cat on top, the card hanging below it into the desktop when hovered.
-            return CGSize(width: 250, height: Self.figure.height * s + 82)
+            return CGSize(width: 250, height: Self.figure.height * s + 98)
         }
         return CGSize(width: Self.base.width * s, height: Self.base.height * s)
     }
@@ -1282,7 +1284,7 @@ private struct DesktopCatView: View {
         if state.hovering {
             CatCard(brain: brain, name: settings.catName, compact: true)
                 .scaleEffect(scale)
-                .frame(height: 74 * scale)
+                .frame(height: 90 * scale)
                 .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: state.cardBelow ? .top : .bottom)))
                 .onAppear { state.showCard = true }
                 .onDisappear { state.showCard = false }

@@ -286,7 +286,7 @@ final class NowPlaying: ObservableObject {
         "com.spotify.client", "com.apple.Music", "com.apple.iTunes", "com.tidal.desktop", "com.deezer.deezer-desktop",
         "com.amazon.music", "com.github.th-ch.youtube-music", "com.ytmdesktop.app", "sh.cider.electron",
         "com.cider.Cider", "co.brushedtype.doppler-macos", "com.coppertino.Vox", "com.swinsian.Swinsian",
-        "tv.plex.plexamp", "com.qobuz.QobuzDesktop", "com.soundcloud.desktop", "com.apple.podcasts",
+        "tv.plex.plexamp", "com.qobuz.QobuzDesktop", "com.soundcloud.desktop",
     ]
     static let videoApps: Set<String> = [
         "com.apple.QuickTimePlayerX", "com.apple.TV", "com.netflix.Netflix", "com.colliderli.iina", "org.videolan.vlc",
@@ -348,6 +348,8 @@ final class NowPlaying: ObservableObject {
             ("video by media type", false, u("com.example.player", artist: "x", type: "kMRMediaRemoteNowPlayingInfoTypeVideo")),
             ("unknown app, a song", true, u("com.example.player", artist: "Artist")),
             ("unknown app, 2-hour mix", false, u("com.example.player", artist: "DJ", duration: 7200)),
+            ("podcast episode", false, u("com.apple.podcasts", artist: "The Daily", duration: 1800,
+                                         type: "kMRMediaRemoteNowPlayingInfoTypeAudio")),
         ]
         for (name, expected, update) in cases {
             let got = isMusic(update)

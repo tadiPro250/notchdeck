@@ -215,7 +215,7 @@ struct NowPlayingCard: View {
                         .foregroundStyle(look.theme.secondaryText)
                         .lineLimit(1)
                     if lyrics.lines.isEmpty {
-                        Text(track.isMusic ? track.appName.uppercased() : "WATCHING · \(track.appName.uppercased())")
+                        Text(track.appName.uppercased())
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(look.accent.opacity(0.8))
                     } else {
@@ -243,7 +243,7 @@ struct NowPlayingCard: View {
                                  tint: look.accent) { player.seek(to: $0) }
                     }
                     HStack(spacing: 30) {
-                        // A film or a video skips back and forward; a song changes track.
+                        // A film, a video or a podcast skips back and forward; a song changes track.
                         if track.isMusic {
                             MediaButton(symbol: "backward.fill", size: 15) { player.previous() }
                         } else {
