@@ -350,9 +350,10 @@ final class CatBrain: ObservableObject {
         save()
     }
 
-    /// A spell of chasing the pointer: a little weight off, and it loved it.
+    /// A spell of chasing the pointer: it loved it, and it works off extra weight (only extra:
+    /// a playful dog that's fed properly stays at its healthy weight, it doesn't waste away).
     func exercised() {
-        weight = max(0, weight - 0.006)
+        if weight > 0.5 { weight = max(0.5, weight - 0.008) }
         affection = min(1, affection + 0.05)
         save()
     }
@@ -422,7 +423,8 @@ final class CatBrain: ObservableObject {
         } else if fullness < 0.15 {
             weight = max(0, weight - h * 0.01)
         } else {
-            weight += (0.5 - weight) * min(1, h * 0.006)
+            // Back towards normal: about half the way in a waking day.
+            weight += (0.5 - weight) * min(1, h * 0.045)
         }
 
         var harm = 0.0
@@ -511,6 +513,18 @@ final class CatBrain: ObservableObject {
         run("fed when hungry, petted every 2 h", days: 14, expect: { !$0.isSick && !$0.isOverweight && $0.mood.isGood }) { b, h in
             if b.isHungry { b.feed() }
             if h % 2 == 0 { b.pet() }
+        }
+        run("fed when hungry, petted, plays three times an hour", days: 14,
+            expect: { abs($0.weight - 0.5) < 0.08 && !$0.isSick && $0.mood.isGood }) { b, h in
+            if b.isHungry { b.feed() }
+            if h % 2 == 0 { b.pet() }
+            b.exercised(); b.exercised(); b.exercised()
+        }
+        run("overweight, then fed properly and played with", days: 10, expect: { !$0.isOverweight && !$0.isSick }) { b, h in
+            if h == 0, b.weight == 0.5 { b.weight = 0.8 }
+            if b.isHungry { b.feed() }
+            if h % 2 == 0 { b.pet() }
+            b.exercised(); b.exercised()
         }
         run("fed every hour", days: 7, expect: { $0.isOverweight || $0.isSick }) { b, h in
             b.feed()
