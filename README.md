@@ -164,3 +164,8 @@ view-local state lives in a small `ViewState` box (`Sources/NotchDeck/Views/View
 
 Private frameworks (DisplayServices, CoreBrightness, SkyLight, MediaRemote, IOAVService) can change in
 any macOS update; each feature built on one turns itself off quietly if its symbol goes missing.
+
+## Licence
+
+NotchDeck is open source under the [MIT License](LICENSE): use it, change it and share it, keeping the
+copyright notice. Issues and pull requests are welcome.
