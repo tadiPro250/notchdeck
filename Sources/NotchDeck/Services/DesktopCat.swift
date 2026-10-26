@@ -83,11 +83,26 @@ enum CatPlacement: String, CaseIterable, Identifiable {
     var title: String { self == .screen ? "On the screen" : "On the notch" }
 }
 
-/// The cat's needs. Fullness drains over about ten hours and affection over six; both survive
-/// relaunches. Feeding and petting fill them back up.
+/// Something about the dog worth telling you once, in the notch.
+struct CatAlert {
+    var symbol: String
+    var title: String
+    var detail: String
+    var tint: Color
+}
+
+/// The dog's body and needs. Time only passes for it while the Mac is awake: system sleep, a
+/// sleeping display and a shut-down Mac all stop its clock, so it never comes back from a closed
+/// lid starving. It sleeps through the night (bedtime to wake-up, set in Settings), and while it
+/// sleeps it gets hungry slowly and doesn't miss you.
+///
+/// Care has consequences. Fullness and affection each drain over about ten waking hours.
+/// Feeding a dog that isn't hungry gives it no love, puts weight on it, and twice in a row makes
+/// it throw up; kept full all day it gets fat, then slow, then ill. Left alone it gets lonely and
+/// ill too. A sick dog lies down and won't play until good care (or the vet) brings it round.
 final class CatBrain: ObservableObject {
     enum Mood {
-        case happy, content, hungry, starving
+        case happy, content, hungry, starving, stuffed, lonely, sick
 
         var title: String {
             switch self {
@@ -95,101 +110,435 @@ final class CatBrain: ObservableObject {
             case .content: "Content"
             case .hungry: "Hungry"
             case .starving: "Starving"
+            case .stuffed: "Too full"
+            case .lonely: "Lonely"
+            case .sick: "Sick"
             }
         }
+
+        /// Ears down, tail still.
+        var isLow: Bool { self == .starving || self == .lonely || self == .sick }
+        var isGood: Bool { self == .happy || self == .content }
     }
 
     enum Pose: Equatable {
         case walk, sit, sleep, eat
+        /// Lying down awake, head up.
+        case lie
+        /// Front down, rear up: the morning stretch.
+        case stretch
+        /// Walking slowly with the nose to the ground.
+        case sniff
+        /// Sitting, a hind leg going at an itch.
+        case scratch
+        case bark
+        /// Lying flat, a thermometer in its mouth.
+        case sick
+        case vomit
+
+        /// Moving along the floor.
+        var travels: Bool { self == .walk || self == .sniff }
     }
 
-    @Published private(set) var fullness: Double
-    @Published private(set) var affection: Double
+    @Published fileprivate(set) var fullness: Double
+    @Published fileprivate(set) var affection: Double
+    /// Body condition: 0 skin and bone, 0.5 just right, 1 obese.
+    @Published fileprivate(set) var weight: Double
+    @Published fileprivate(set) var health: Double
+    /// Food it ate past full and hasn't digested yet. Past 0.5 it comes back up.
+    @Published fileprivate(set) var stomach: Double
+    /// While it's at the vet.
+    @Published private(set) var awayUntil: Date?
+    /// What the vet said last time, until the next visit.
+    @Published private(set) var vetNote: String?
     @Published var pose: Pose = .sit
     /// When the last hearts started (petting or feeding), for the floating-hearts animation.
     @Published private(set) var heartsAt: Date?
 
-    /// Called once each time the cat gets hungry.
-    var onHungry: ((String) -> Void)?
+    /// Something worth a card in the notch (hungry, threw up, lonely, sick, back from the vet).
+    var onAlert: ((CatAlert) -> Void)?
+    /// The dog was woken or interrupted and should stay as it is for this long before deciding
+    /// what to do next (DesktopCat moves it).
+    var onInterrupt: ((TimeInterval) -> Void)?
 
     private let defaults: UserDefaults
     private let settings: AppSettings
-    private var updated: Date
     private var timer: Timer?
-    private var announcedHunger = false
+    private var observers: [NSObjectProtocol] = []
+    /// Awake-time (seconds of `CLOCK_UPTIME_RAW`) at the last update, and the boot it belongs to.
+    private var lastUptime: Double
+    private var lastBoot: Double
+    /// True while the Mac or its display sleeps.
+    private var paused = false
+    private var announced = Set<String>()
+    fileprivate var lastPets: [Date] = []
 
     static let fullnessPerHour = 0.1
-    static let affectionPerHour = 1.0 / 6
+    static let affectionPerHour = 0.1
+    static let mealSize = 0.45
+    static let vetVisit: TimeInterval = 20 * 60
 
     init(settings: AppSettings, live: Bool = true) {
         self.settings = settings
-        defaults = live ? .standard : UserDefaults(suiteName: "com.premprateek.notchdeck.previews") ?? .standard
-        fullness = live ? defaults.object(forKey: "cat.fullness") as? Double ?? 0.8 : 0.62
-        affection = live ? defaults.object(forKey: "cat.affection") as? Double ?? 0.6 : 0.8
-        updated = live ? defaults.object(forKey: "cat.updated") as? Date ?? Date() : Date()
+        let store = live ? UserDefaults.standard : UserDefaults(suiteName: "com.premprateek.notchdeck.previews") ?? .standard
+        defaults = store
+        func stored(_ key: String, _ fallback: Double, preview: Double) -> Double {
+            live ? store.object(forKey: key) as? Double ?? fallback : preview
+        }
+        fullness = stored("cat.fullness", 0.8, preview: 0.62)
+        affection = stored("cat.affection", 0.6, preview: 0.8)
+        weight = stored("cat.weight", 0.5, preview: 0.5)
+        health = stored("cat.health", 1, preview: 1)
+        stomach = stored("cat.stomach", 0, preview: 0)
+        awayUntil = live ? store.object(forKey: "cat.awayUntil") as? Date : nil
+        vetNote = live ? store.string(forKey: "cat.vetNote") : nil
+        lastUptime = live ? store.object(forKey: "cat.uptime") as? Double ?? Self.uptime() : Self.uptime()
+        lastBoot = live ? store.object(forKey: "cat.boot") as? Double ?? Self.bootTime() : Self.bootTime()
         guard live else { return }
+        announced = Set(defaults.stringArray(forKey: "cat.announced") ?? [])
         decay()
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.decay() }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.decay()
+                self?.paused = true
+            })
+        }
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                // Nothing happened to it while the Mac slept: start counting from now.
+                self.paused = false
+                self.lastUptime = Self.uptime()
+                self.lastBoot = Self.bootTime()
+                self.save()
+            })
+        }
     }
+
+    // MARK: Reading the dog
 
     var happiness: Double { 0.65 * fullness + 0.35 * affection }
 
     var mood: Mood {
+        if isSick { return .sick }
         if fullness < 0.1 { return .starving }
+        if stomach > 0.05 { return .stuffed }
         if fullness < 0.3 { return .hungry }
-        return happiness > 0.6 ? .happy : .content
+        if affection < 0.15 { return .lonely }
+        return happiness > 0.6 && affection > 0.45 ? .happy : .content
     }
 
     var isHungry: Bool { fullness < 0.3 }
+    var isSick: Bool { health < 0.35 }
+    var isAway: Bool { awayUntil.map { $0 > Date() } ?? false }
+    var isOverweight: Bool { weight > 0.68 }
+    var isObese: Bool { weight > 0.84 }
+    var isNight: Bool { Self.isNight(Date(), bedtime: settings.catBedtime, wake: settings.catWakeTime) }
+
+    /// Fit enough to chase the pointer.
+    var canPlay: Bool { mood == .happy && !isOverweight && health > 0.6 }
+
+    /// How fast it walks, against a fit and fed dog.
+    var pace: Double {
+        if isSick { return 0.35 }
+        var pace = 1.0
+        if isObese { pace *= 0.45 } else if isOverweight { pace *= 0.7 }
+        if isHungry || mood == .lonely { pace *= 0.65 }
+        return pace
+    }
+
+    /// How round it's drawn: 1 at a healthy weight, up to about 1.5 when obese, thinner when starved.
+    var girth: Double {
+        if weight > 0.58 { return 1 + (weight - 0.58) * 1.2 }
+        if weight < 0.3 { return 1 - (0.3 - weight) * 0.6 }
+        return 1
+    }
 
     var hungerText: String {
+        if stomach > 0.05 { return "Stuffed" }
         switch fullness {
-        case 0.85...: "Full"
-        case 0.55...: "Satisfied"
-        case 0.3...: "Peckish"
-        case 0.1...: "Hungry"
-        default: "Starving"
+        case 0.85...: return "Full"
+        case 0.55...: return "Satisfied"
+        case 0.3...: return "Peckish"
+        case 0.1...: return "Hungry"
+        default: return "Starving"
         }
     }
 
+    var weightText: String {
+        switch weight {
+        case ..<0.22: "Underweight"
+        case ..<0.68: "Healthy weight"
+        case ..<0.84: "Overweight"
+        default: "Obese"
+        }
+    }
+
+    var healthText: String {
+        switch health {
+        case 0.8...: "Healthy"
+        case 0.55...: "A bit off"
+        case 0.35...: "Unwell"
+        default: "Sick"
+        }
+    }
+
+    static func isNight(_ date: Date, bedtime: Int, wake: Int) -> Bool {
+        let hour = Calendar.current.component(.hour, from: date)
+        if bedtime == wake { return false }
+        return bedtime > wake ? (hour >= bedtime || hour < wake) : (hour >= bedtime && hour < wake)
+    }
+
+    // MARK: Caring for it
+
     func feed() {
+        guard !isAway else { return }
         decay()
-        fullness = min(1, fullness + 0.45)
-        affection = min(1, affection + 0.1)
-        announcedHunger = false
-        pose = .eat
-        heartsAt = Date()
-        save()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) { [weak self] in
-            if self?.pose == .eat { self?.pose = .sit }
+        let before = fullness
+        let overflow = max(0, before + Self.mealSize - 1)
+        fullness = min(1, before + Self.mealSize)
+        if overflow > 0 {
+            // Food past full: no thanks for it, weight on the hips, and a stomach that complains.
+            stomach += overflow
+            weight = min(1, weight + overflow * 0.12)
+        } else {
+            affection = min(1, affection + 0.1)
+            heartsAt = Date()
+        }
+        if stomach > 0.5 {
+            throwUp()
+        } else {
+            pose = .eat
+            save()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) { [weak self] in
+                guard let self, self.pose == .eat else { return }
+                self.pose = self.stomach > 0.05 ? .lie : .sit
+                self.onInterrupt?(self.isNight ? 6 : .random(in: 4...8))
+            }
+        }
+        if !isHungry { announced.remove("hungry") }
+        if overflow > 0, !isOverweight {
+            alertOnce("stuffed", CatAlert(symbol: "exclamationmark.triangle.fill", title: "\(settings.catName) wasn't hungry",
+                                          detail: "Food past full puts weight on, and too much makes it sick", tint: .orange))
         }
     }
 
     func pet() {
+        guard !isAway else { return }
         decay()
-        affection = min(1, affection + 0.2)
-        heartsAt = Date()
-        if pose == .sleep { pose = .sit }
+        // Each pet in quick succession counts for less: a scratch is lovely, the fortieth isn't.
+        let now = Date()
+        lastPets = lastPets.filter { now.timeIntervalSince($0) < 90 } + [now]
+        affection = min(1, affection + 0.25 / Double(lastPets.count))
+        heartsAt = now
+        if affection >= 0.15 { announced.remove("lonely") }
+        if pose == .sleep {
+            // Woken: it sits up, groggy, and at night settles straight back down.
+            pose = .sit
+            onInterrupt?(isNight ? 10 : 5)
+        }
         save()
     }
 
-    private func decay() {
-        let now = Date()
-        let hours = now.timeIntervalSince(updated) / 3600
-        updated = now
-        fullness = max(0, fullness - hours * Self.fullnessPerHour)
-        affection = max(0, affection - hours * Self.affectionPerHour)
+    /// The vet keeps it for twenty minutes and sends it home better, with advice.
+    func takeToVet() {
+        guard !isAway else { return }
+        decay()
+        awayUntil = Date().addingTimeInterval(Self.vetVisit)
         save()
-        if isHungry, !announcedHunger {
-            announcedHunger = true
-            onHungry?(settings.catName)
+    }
+
+    /// A spell of chasing the pointer: a little weight off, and it loved it.
+    func exercised() {
+        weight = max(0, weight - 0.006)
+        affection = min(1, affection + 0.05)
+        save()
+    }
+
+    private func throwUp() {
+        stomach = 0
+        fullness = 0.55
+        health = max(0, health - 0.08)
+        affection = max(0, affection - 0.05)
+        pose = .vomit
+        save()
+        alertOnce("vomit", CatAlert(symbol: "exclamationmark.triangle.fill", title: "\(settings.catName) threw up",
+                                    detail: "It was fed too much. Wait until it's hungry", tint: .red))
+        announced.remove("vomit")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self, self.pose == .vomit else { return }
+            self.pose = .lie
+            self.onInterrupt?(30)
         }
+    }
+
+    private func comeHome() {
+        awayUntil = nil
+        health = max(health, 0.8)
+        stomach = 0
+        affection = min(1, affection + 0.15)
+        var advice: [String] = []
+        if isOverweight { advice.append("feed it only when it's hungry") }
+        if affection < 0.4 { advice.append("give it more attention") }
+        if fullness < 0.3 { advice.append("don't let it go hungry") }
+        vetNote = advice.isEmpty ? nil : "The vet says: " + advice.joined(separator: ", ") + "."
+        announced.subtract(["sick"])
+        onAlert?(CatAlert(symbol: "cross.case.fill", title: "\(settings.catName) is back from the vet",
+                          detail: vetNote ?? "All better", tint: .green))
+        save()
+    }
+
+    // MARK: Time
+
+    private func decay() {
+        let now = Self.uptime()
+        let boot = Self.bootTime()
+        // Seconds the Mac was awake since the last update. A different boot means it was shut
+        // down in between, which doesn't count either.
+        var hours = abs(boot - lastBoot) < 2 ? max(0, now - lastUptime) / 3600 : 0
+        if paused { hours = 0 }
+        lastUptime = now
+        lastBoot = boot
+        if let back = awayUntil, back <= Date() { comeHome() }
+        if hours > 0, !isAway { live(hours: hours) }
+        save()
+        announce()
+    }
+
+    fileprivate func live(hours h: Double) {
+        let asleep = isNight || pose == .sleep
+        fullness = max(0, fullness - h * Self.fullnessPerHour * (asleep ? 0.4 : 1))
+        affection = max(0, affection - h * Self.affectionPerHour * (asleep ? 0.1 : 1))
+        // Digesting what it overate.
+        stomach = max(0, stomach - h * 0.5)
+
+        // Weight follows the bowl: kept full it fattens, kept hungry it thins, and otherwise it
+        // drifts slowly back to normal. Losing weight is slower than gaining it.
+        if fullness > 0.88 {
+            weight = min(1, weight + h * 0.012)
+        } else if fullness < 0.15 {
+            weight = max(0, weight - h * 0.01)
+        } else {
+            weight += (0.5 - weight) * min(1, h * 0.006)
+        }
+
+        var harm = 0.0
+        if isObese { harm += 0.012 } else if isOverweight { harm += 0.004 }
+        if weight < 0.22 { harm += 0.01 }
+        if fullness <= 0 { harm += 0.04 } else if fullness < 0.1 { harm += 0.012 }
+        if affection < 0.1 { harm += 0.012 }
+        if harm > 0 {
+            health = max(0, health - h * harm)
+        } else {
+            health = min(1, health + h * (asleep ? 0.03 : 0.02))
+        }
+    }
+
+    /// Each bad turn is told once, until it's over.
+    private func announce() {
+        let name = settings.catName
+        if isHungry {
+            alertOnce("hungry", CatAlert(symbol: "dog.fill", title: "\(name) is hungry",
+                                         detail: settings.catFeeding == .hover
+                                             ? "Rest the pointer on \(name) and press Feed"
+                                             : "Open the notch → Widgets and press Feed", tint: .orange))
+        } else {
+            announced.remove("hungry")
+        }
+        if affection < 0.15 {
+            alertOnce("lonely", CatAlert(symbol: "heart.slash.fill", title: "\(name) misses you",
+                                         detail: "Click it to pet it; a lonely dog gets ill", tint: .pink))
+        }
+        if isOverweight {
+            alertOnce("heavy", CatAlert(symbol: "scalemass.fill", title: "\(name) is getting heavy",
+                                        detail: "Feed it only when it's hungry and let it play", tint: .orange))
+        } else if weight < 0.6 {
+            announced.remove("heavy")
+        }
+        if isSick {
+            alertOnce("sick", CatAlert(symbol: "cross.case.fill", title: "\(name) is sick",
+                                       detail: "Take it to the vet from its card", tint: .red))
+        } else if health > 0.5 {
+            announced.remove("sick")
+        }
+        defaults.set(Array(announced), forKey: "cat.announced")
+    }
+
+    private func alertOnce(_ key: String, _ alert: CatAlert) {
+        // Nobody listening yet (still launching): tell it on the next check instead.
+        guard !announced.contains(key), let onAlert else { return }
+        announced.insert(key)
+        defaults.set(Array(announced), forKey: "cat.announced")
+        onAlert(alert)
     }
 
     private func save() {
         defaults.set(fullness, forKey: "cat.fullness")
         defaults.set(affection, forKey: "cat.affection")
-        defaults.set(updated, forKey: "cat.updated")
+        defaults.set(weight, forKey: "cat.weight")
+        defaults.set(health, forKey: "cat.health")
+        defaults.set(stomach, forKey: "cat.stomach")
+        defaults.set(awayUntil, forKey: "cat.awayUntil")
+        defaults.set(vetNote, forKey: "cat.vetNote")
+        defaults.set(lastUptime, forKey: "cat.uptime")
+        defaults.set(lastBoot, forKey: "cat.boot")
+    }
+
+    /// `--test-dog`: lives through some days of care and neglect and prints how the dog ends up.
+    static func selfTest() {
+        func run(_ name: String, days: Int, expect: (CatBrain) -> Bool, care: (CatBrain, Int) -> Void) {
+            let settings = AppSettings(defaults: UserDefaults(suiteName: "notchdeck.test-dog") ?? .standard)
+            // Bedtime equal to wake-up: never night, so the run doesn't depend on the clock.
+            settings.catBedtime = 0
+            settings.catWakeTime = 0
+            let brain = CatBrain(settings: settings, live: false)
+            brain.fullness = 0.8; brain.affection = 0.6; brain.weight = 0.5; brain.health = 1; brain.stomach = 0
+            for hour in 0..<(days * 16) {
+                brain.lastPets = []
+                care(brain, hour % 16)
+                brain.live(hours: 1)
+            }
+            let verdict = String(format: "food %.2f love %.2f weight %.2f (%@) health %.2f (%@) mood %@",
+                                 brain.fullness, brain.affection, brain.weight, brain.weightText, brain.health,
+                                 brain.healthText, brain.mood.title)
+            print("\(expect(brain) ? "ok  " : "FAIL") \(name) after \(days) days: \(verdict)")
+        }
+        // A waking day is 16 hours here.
+        run("fed when hungry, petted every 2 h", days: 14, expect: { !$0.isSick && !$0.isOverweight && $0.mood.isGood }) { b, h in
+            if b.isHungry { b.feed() }
+            if h % 2 == 0 { b.pet() }
+        }
+        run("fed every hour", days: 7, expect: { $0.isOverweight || $0.isSick }) { b, h in
+            b.feed()
+            if h % 3 == 0 { b.pet() }
+        }
+        run("never petted", days: 4, expect: { $0.mood == .lonely || $0.isSick }) { b, _ in
+            if b.isHungry { b.feed() }
+        }
+        run("never fed", days: 3, expect: { $0.isSick }) { b, h in
+            if h % 3 == 0 { b.pet() }
+        }
+        let b = CatBrain(settings: AppSettings(defaults: UserDefaults(suiteName: "notchdeck.test-dog") ?? .standard), live: false)
+        b.fullness = 0.9; b.stomach = 0
+        b.feed(); b.feed()
+        print("\(b.stomach == 0 && b.health < 1 ? "ok  " : "FAIL") two meals on a full stomach: threw up (health \(String(format: "%.2f", b.health)))")
+        let night = Calendar.current.date(bySettingHour: 2, minute: 0, second: 0, of: Date())!
+        let noon = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: Date())!
+        print("\(isNight(night, bedtime: 23, wake: 7) && !isNight(noon, bedtime: 23, wake: 7) ? "ok  " : "FAIL") 02:00 is night, 12:00 isn't")
+    }
+
+    /// Seconds the Mac has been awake since boot (stops while it sleeps).
+    static func uptime() -> Double { Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1e9 }
+
+    /// When the Mac booted, to tell a restart from a long sleep.
+    static func bootTime() -> Double {
+        var boot = timeval()
+        var size = MemoryLayout<timeval>.size
+        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
+        guard sysctl(&mib, 2, &boot, &size, nil, 0) == 0 else { return 0 }
+        return Double(boot.tv_sec) + Double(boot.tv_usec) / 1e6
     }
 }
 
@@ -203,6 +552,8 @@ struct CatFigure: View {
     let color: CatColor
     /// Walk cycle phase in radians; also drives the tail, the tongue and blinking.
     let time: Double
+    /// How round the body is: 1 normal, about 1.5 obese, under 1 when starved.
+    var girth: Double = 1
 
     var body: some View {
         Canvas { context, size in
@@ -217,13 +568,16 @@ struct CatFigure: View {
         let ear = GraphicsContext.Shading.color(color.ear)
         let muzzle = GraphicsContext.Shading.color(color.muzzle)
         let outline = GraphicsContext.Shading.color(.black.opacity(0.28))
-        let droop = mood == .starving ? 1.0 : (mood == .hungry ? 0.5 : 0)
+        let droop = mood.isLow ? 1.0 : (mood == .hungry || mood == .stuffed ? 0.5 : 0)
         let happy = mood == .happy
         let t = time
-        // A happy dog's tail goes faster.
-        let wag = sin(t * (happy ? 2.6 : 1.2)) * (happy ? 1 : 0.5)
+        // A happy dog's tail goes faster; a sad or sick one barely moves it.
+        let wag = sin(t * (happy ? 2.6 : 1.2)) * (happy ? 1 : (mood.isLow ? 0.12 : 0.5))
+        // Extra belly, in drawing points.
+        let belly = (girth - 1) * 16
 
-        context.fill(Path(ellipseIn: CGRect(x: 16, y: 66, width: 70, height: 6)), with: .color(.black.opacity(0.18)))
+        context.fill(Path(ellipseIn: CGRect(x: 16 - belly / 2, y: 66, width: 70 + belly, height: 6)),
+                     with: .color(.black.opacity(0.18)))
 
         switch pose {
         case .sleep:
@@ -233,7 +587,8 @@ struct CatFigure: View {
             tail.addQuadCurve(to: CGPoint(x: 58, y: 68), control: CGPoint(x: 24, y: 72))
             context.stroke(tail, with: fur, style: StrokeStyle(lineWidth: 6, lineCap: .round))
             let breathe = 1 + 0.03 * sin(t * 1.2)
-            let body = Path(ellipseIn: CGRect(x: 14, y: 66 - 28 * breathe, width: 62, height: 28 * breathe))
+            let h = (28 + belly * 0.6) * breathe
+            let body = Path(ellipseIn: CGRect(x: 14 - belly / 2, y: 66 - h, width: 62 + belly, height: h))
             context.fill(body, with: fur)
             context.stroke(body, with: outline, lineWidth: 0.8)
             context.fill(Path(ellipseIn: CGRect(x: 60, y: 61, width: 22, height: 7)), with: muzzle)
@@ -246,16 +601,50 @@ struct CatFigure: View {
                 context.draw(text, at: CGPoint(x: 86 + phase * 10, y: 38 - phase * 30))
             }
 
-        case .sit:
+        case .lie, .sick, .vomit:
+            // Lying down, front paws out. Awake it holds its head up; ill, the head sinks.
+            let ill = pose != .lie
+            tail(&context, from: CGPoint(x: 18, y: 58), to: CGPoint(x: 4 + wag * 4, y: 62 - abs(wag) * 5),
+                 control: CGPoint(x: 8, y: 54), fur: fur, ear: ear)
+            let h = 22 + belly * 0.7
+            let body = Path(ellipseIn: CGRect(x: 14 - belly / 2, y: 67 - h, width: 60 + belly, height: h))
+            context.fill(body, with: fur)
+            context.stroke(body, with: outline, lineWidth: 0.8)
+            let paws = Path(roundedRect: CGRect(x: 56, y: 61, width: 28, height: 7), cornerRadius: 3.5)
+            context.fill(paws, with: fur)
+            context.stroke(paws, with: outline, lineWidth: 0.6)
+            if pose == .vomit {
+                context.fill(Path(ellipseIn: CGRect(x: 83, y: 63.5, width: 17, height: 5)),
+                             with: .color(Color(red: 0.78, green: 0.75, blue: 0.35).opacity(0.9)))
+            }
+            let center = pose == .vomit ? CGPoint(x: 80, y: 52 + sin(t * 4) * 1.2)
+                : (ill ? CGPoint(x: 74, y: 50) : CGPoint(x: 72, y: 38))
+            head(&context, center: center, fur: fur, ear: ear, muzzle: muzzle, outline: outline,
+                 eyes: ill ? .closed : (blinking(t) ? .closed : .open), droop: ill ? 1 : droop,
+                 tongue: !ill && happy, tilt: pose == .vomit ? 24 : (ill ? 10 : 0))
+            if pose == .sick { thermometer(&context, at: CGPoint(x: 98, y: 64)) }
+
+        case .sit, .scratch, .bark:
+            let scratching = pose == .scratch
             tail(&context, from: CGPoint(x: 30, y: 54), to: CGPoint(x: 14 + wag * 6, y: 34 - abs(wag) * 3 + droop * 18),
                  control: CGPoint(x: 14, y: 54), fur: fur, ear: ear)
-            let haunch = Path(ellipseIn: CGRect(x: 24, y: 38, width: 38, height: 30))
+            let haunch = Path(ellipseIn: CGRect(x: 24 - belly / 2, y: 38 - belly / 3, width: 38 + belly, height: 30 + belly / 3))
             context.fill(haunch, with: fur)
             context.stroke(haunch, with: outline, lineWidth: 0.8)
-            let paw = Path(ellipseIn: CGRect(x: 22, y: 61, width: 18, height: 7))
-            context.fill(paw, with: fur)
-            context.stroke(paw, with: outline, lineWidth: 0.6)
-            let chest = Path(ellipseIn: CGRect(x: 44, y: 24, width: 28, height: 42))
+            if scratching {
+                // The hind leg kicks up at the neck, fast.
+                var leg = context
+                leg.translateBy(x: 36, y: 58)
+                leg.rotate(by: .radians(-2.45 + sin(t * 14) * 0.22))
+                let shape = Path(roundedRect: CGRect(x: -4, y: 0, width: 8, height: 26), cornerRadius: 4)
+                leg.fill(shape, with: .color(color.fur.opacity(0.85)))
+                leg.stroke(shape, with: outline, lineWidth: 0.6)
+            } else {
+                let paw = Path(ellipseIn: CGRect(x: 22, y: 61, width: 18, height: 7))
+                context.fill(paw, with: fur)
+                context.stroke(paw, with: outline, lineWidth: 0.6)
+            }
+            let chest = Path(ellipseIn: CGRect(x: 44 - belly / 3, y: 24, width: 28 + belly * 0.6, height: 42))
             context.fill(chest, with: fur)
             context.fill(Path(ellipseIn: CGRect(x: 55, y: 32, width: 14, height: 24)), with: muzzle)
             for x in [52.0, 61.0] {
@@ -263,15 +652,47 @@ struct CatFigure: View {
                 context.fill(leg, with: fur)
                 context.stroke(leg, with: outline, lineWidth: 0.6)
             }
-            head(&context, center: CGPoint(x: 62, y: 20), fur: fur, ear: ear, muzzle: muzzle, outline: outline,
-                 eyes: happy ? .happy : (blinking(t) ? .closed : .open), droop: droop, tongue: happy, tilt: 0)
+            let barking = pose == .bark
+            let woof = barking ? max(0, sin(t * 3)) : 0
+            head(&context, center: CGPoint(x: 62, y: 20 - woof * 2), fur: fur, ear: ear, muzzle: muzzle, outline: outline,
+                 eyes: scratching ? .closed : (happy || barking ? .happy : (blinking(t) ? .closed : .open)),
+                 droop: droop, tongue: happy && !barking && !scratching, tilt: scratching ? 12 : -woof * 8,
+                 open: woof)
+            if barking, woof > 0.3 {
+                let text = Text("woof!").font(.system(size: 9, weight: .heavy, design: .rounded))
+                    .foregroundColor(.white.opacity(min(1, woof * 1.4)))
+                context.draw(text, at: CGPoint(x: 88, y: 6 - woof * 3))
+            }
 
-        case .walk, .eat:
-            let walking = pose == .walk
-            let bob = walking ? abs(sin(t)) * 1.5 : 0
+        case .stretch:
+            // The play bow: elbows on the floor, rear in the air, tail up.
+            let ease = 0.5 + 0.5 * sin(t * 0.8)
+            tail(&context, from: CGPoint(x: 22, y: 28), to: CGPoint(x: 10 + wag * 5, y: 8),
+                 control: CGPoint(x: 10, y: 26), fur: fur, ear: ear)
+            for x in [22.0, 30.0] {
+                let leg = Path(roundedRect: CGRect(x: x, y: 36, width: 8, height: 32), cornerRadius: 4)
+                context.fill(leg, with: fur)
+                context.stroke(leg, with: outline, lineWidth: 0.6)
+            }
+            var torso = context
+            torso.translateBy(x: 48, y: 40)
+            torso.rotate(by: .degrees(14 + ease * 4))
+            let body = Path(roundedRect: CGRect(x: -32, y: -12 - belly / 3, width: 62, height: 24 + belly * 0.7), cornerRadius: 12)
+            torso.fill(body, with: fur)
+            torso.stroke(body, with: outline, lineWidth: 0.8)
+            let paws = Path(roundedRect: CGRect(x: 62, y: 61, width: 30, height: 7), cornerRadius: 3.5)
+            context.fill(paws, with: fur)
+            context.stroke(paws, with: outline, lineWidth: 0.6)
+            head(&context, center: CGPoint(x: 82, y: 50), fur: fur, ear: ear, muzzle: muzzle, outline: outline,
+                 eyes: .closed, droop: 0, tongue: false, tilt: -6, open: ease * 0.8)
+
+        case .walk, .eat, .sniff:
+            let walking = pose.travels
+            let sniffing = pose == .sniff
+            let bob = walking ? abs(sin(t)) * (sniffing ? 0.6 : 1.5) : 0
             tail(&context, from: CGPoint(x: 20, y: 36 - bob), to: CGPoint(x: 6 + wag * 5, y: 18 + droop * 20),
                  control: CGPoint(x: 6, y: 34), fur: fur, ear: ear)
-            let swing = walking ? sin(t) * 0.45 : 0
+            let swing = walking ? sin(t) * (sniffing ? 0.25 : 0.45) : 0
             let legs: [(Double, Double)] = [(26, swing), (34, -swing), (60, -swing), (68, swing)]
             for (x, angle) in legs {
                 var leg = context
@@ -281,7 +702,8 @@ struct CatFigure: View {
                 leg.fill(shape, with: x == 34 || x == 68 ? .color(color.fur.opacity(0.8)) : fur)
                 leg.stroke(shape, with: outline, lineWidth: 0.6)
             }
-            let body = Path(roundedRect: CGRect(x: 16, y: 30 - bob, width: 62, height: 24), cornerRadius: 12)
+            let body = Path(roundedRect: CGRect(x: 16 - belly * 0.3, y: 30 - bob - belly * 0.3,
+                                                width: 62 + belly * 0.6, height: 24 + belly), cornerRadius: 12 + belly / 2)
             context.fill(body, with: fur)
             context.stroke(body, with: outline, lineWidth: 0.8)
             context.fill(Path(ellipseIn: CGRect(x: 56, y: 40 - bob, width: 20, height: 13)), with: muzzle)
@@ -290,6 +712,10 @@ struct CatFigure: View {
                 head(&context, center: CGPoint(x: 78, y: 48 + chomp), fur: fur, ear: ear, muzzle: muzzle, outline: outline,
                      eyes: .happy, droop: 0, tongue: false, tilt: 14)
                 bowl(&context)
+            } else if sniffing {
+                // Nose to the ground, twitching.
+                head(&context, center: CGPoint(x: 82, y: 44 - bob + sin(t * 6) * 0.8), fur: fur, ear: ear, muzzle: muzzle,
+                     outline: outline, eyes: .open, droop: droop, tongue: false, tilt: 26)
             } else {
                 head(&context, center: CGPoint(x: 78, y: 24 - bob), fur: fur, ear: ear, muzzle: muzzle, outline: outline,
                      eyes: blinking(t) ? .closed : .open, droop: droop, tongue: happy && walking, tilt: 0)
@@ -309,25 +735,36 @@ struct CatFigure: View {
     }
 
     /// Head facing right: round skull, a snout with a black nose, one floppy ear, and a tongue
-    /// when it's happy. `tilt` turns the head down (degrees), for sleeping and eating.
+    /// when it's happy. `tilt` turns the head down (degrees), for sleeping and eating; `open`
+    /// (0–1) drops the jaw, for barking and yawning.
     private func head(_ context: inout GraphicsContext, center c: CGPoint, fur: GraphicsContext.Shading,
                       ear: GraphicsContext.Shading, muzzle: GraphicsContext.Shading, outline: GraphicsContext.Shading,
-                      eyes: Eyes, droop: Double, tongue: Bool, tilt: Double) {
+                      eyes: Eyes, droop: Double, tongue: Bool, tilt: Double, open: Double = 0) {
         var g = context
         g.translateBy(x: c.x, y: c.y)
         g.rotate(by: .degrees(tilt))
         let skull = Path(ellipseIn: CGRect(x: -12, y: -12, width: 25, height: 23))
         g.fill(skull, with: fur)
         g.stroke(skull, with: outline, lineWidth: 0.8)
-        let snout = Path(roundedRect: CGRect(x: 4, y: -1, width: 18, height: 12), cornerRadius: 6)
+        if open > 0.05 {
+            // The open mouth behind the snout, and the lower jaw below it.
+            g.fill(Path(roundedRect: CGRect(x: 8, y: 5, width: 13, height: 4 + open * 6), cornerRadius: 3),
+                   with: .color(Color(red: 0.45, green: 0.12, blue: 0.16)))
+            let jaw = Path(roundedRect: CGRect(x: 6, y: 7 + open * 6, width: 14, height: 4), cornerRadius: 2)
+            g.fill(jaw, with: muzzle)
+            g.stroke(jaw, with: outline, lineWidth: 0.5)
+        }
+        let snout = Path(roundedRect: CGRect(x: 4, y: -1, width: 18, height: open > 0.05 ? 8 : 12), cornerRadius: 6)
         g.fill(snout, with: muzzle)
         g.stroke(snout, with: outline, lineWidth: 0.6)
         g.fill(Path(ellipseIn: CGRect(x: 17.5, y: -2.5, width: 6.5, height: 5.5)), with: .color(Color(white: 0.08)))
         g.fill(Path(ellipseIn: CGRect(x: 19, y: -1.8, width: 2, height: 1.4)), with: .color(.white.opacity(0.6)))
-        var mouth = Path()
-        mouth.move(to: CGPoint(x: 11, y: 8.5))
-        mouth.addQuadCurve(to: CGPoint(x: 20, y: 7.5), control: CGPoint(x: 16, y: 11))
-        g.stroke(mouth, with: .color(.black.opacity(0.55)), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
+        if open <= 0.05 {
+            var mouth = Path()
+            mouth.move(to: CGPoint(x: 11, y: 8.5))
+            mouth.addQuadCurve(to: CGPoint(x: 20, y: 7.5), control: CGPoint(x: 16, y: 11))
+            g.stroke(mouth, with: .color(.black.opacity(0.55)), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
+        }
         if tongue {
             let lick = 6 + sin(time * 5) * 1.2
             let t = Path(roundedRect: CGRect(x: 13, y: 8.5, width: 5.5, height: lick), cornerRadius: 2.7)
@@ -360,6 +797,16 @@ struct CatFigure: View {
         flap.closeSubpath()
         g.fill(flap, with: ear)
         g.stroke(flap, with: outline, lineWidth: 0.6)
+    }
+
+    /// A thermometer sticking out of the mouth, bulb outward.
+    private func thermometer(_ context: inout GraphicsContext, at p: CGPoint) {
+        var stick = Path()
+        stick.move(to: CGPoint(x: p.x - 10, y: p.y - 5))
+        stick.addLine(to: p)
+        context.stroke(stick, with: .color(.white.opacity(0.95)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+        context.fill(Path(ellipseIn: CGRect(x: p.x - 1.8, y: p.y - 1.8, width: 3.6, height: 3.6)),
+                     with: .color(Color(red: 0.95, green: 0.25, blue: 0.25)))
     }
 
     private func bowl(_ context: inout GraphicsContext) {
@@ -424,6 +871,9 @@ final class DesktopCat {
     private var lastMouse = CGPoint.zero
     /// When the pointer was last MOVED onto the pet; the card waits for it to rest there.
     private var hoverSince: Date?
+    /// Whether the last decision was made at night, to wake up with a stretch.
+    private var sleptTonight = false
+    private var unlockObserver: NSObjectProtocol?
 
     /// The window around the cat in screen mode, at size 1: room for the card above it.
     static let base = CGSize(width: 180, height: 150)
@@ -460,6 +910,15 @@ final class DesktopCat {
                 }
             }
             .store(in: &bag)
+        brain.onInterrupt = { [weak self] seconds in
+            guard let self else { return }
+            self.targetX = nil
+            self.poseUntil = Date().addingTimeInterval(seconds)
+        }
+        // Coming back to the Mac (in the day): it trots over and says hello.
+        unlockObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
+        ) { [weak self] _ in self?.greet() }
     }
 
     private var onNotch: Bool { settings.catPlacement == .notch }
@@ -573,6 +1032,19 @@ final class DesktopCat {
 
     private func tick() {
         guard let window, let screen else { return }
+        // At the vet: off the screen until it's back, then it walks in from the edge.
+        if brain.isAway {
+            if window.isVisible { window.orderOut(nil); endPlay() }
+            return
+        } else if !window.isVisible {
+            let range = walkRange(screen)
+            x = range.upperBound
+            feet = nil
+            brain.pose = .walk
+            targetX = range.upperBound - 160
+            window.orderFrontRegardless()
+            place()
+        }
         let now = Date()
         let dt = min(now.timeIntervalSince(lastTick), 0.1)
         lastTick = now
@@ -597,7 +1069,7 @@ final class DesktopCat {
         if let until = playUntil {
             if now >= until || settings.catPlayfulness == .off { endPlay() } else { chase(mouse, screen: screen, dt: dt); return }
         }
-        if state.hovering || brain.pose == .eat { return }
+        if state.hovering || [.eat, .vomit].contains(brain.pose) { return }
 
         // After playing on the screen it walks back down to the Dock.
         if let current = feet {
@@ -609,16 +1081,23 @@ final class DesktopCat {
             return
         }
 
-        let speed: CGFloat = (brain.isHungry ? 24 : 42) * (onNotch ? 0.8 : catScale(screen))
+        let speed: CGFloat = 42 * CGFloat(brain.pace) * (brain.pose == .sniff ? 0.45 : 1)
+            * (onNotch ? 0.8 : catScale(screen))
         switch brain.pose {
-        case .walk:
+        case .walk, .sniff:
             guard let target = targetX else { decide(screen: screen); return }
             let step = min(abs(target - x), speed * CGFloat(dt))
             x += target > x ? step : -step
             state.facingRight = target > x
             place()
             if abs(target - x) < 1 { targetX = nil; decide(screen: screen) }
-        case .sit, .sleep, .eat:
+        default:
+            // Awake and resting, it turns to look at a pointer that comes near.
+            if [.sit, .lie, .bark].contains(brain.pose), abs(mouse.x - x) < 220, abs(mouse.x - x) > 12,
+               abs(mouse.y - (feet ?? floor(screen))) < 240 {
+                let facing = mouse.x > x
+                if state.facingRight != facing { state.facingRight = facing }
+            }
             if now >= poseUntil { decide(screen: screen) }
         }
     }
@@ -644,7 +1123,7 @@ final class DesktopCat {
             if brain.pose != .sit { brain.pose = .sit }
             return
         }
-        let step = min(distance, 170 * max(s, 0.6) * CGFloat(dt))
+        let step = min(distance, 170 * max(s, 0.6) * CGFloat(brain.pace) * CGFloat(dt))
         x += dx / distance * step
         if !onNotch {
             let next = currentFeet + dy / distance * step
@@ -669,6 +1148,7 @@ final class DesktopCat {
     private func endPlay() {
         guard playUntil != nil else { return }
         playUntil = nil
+        brain.exercised()
         hoverSince = nil
         scheduleNextPlay()
         state.playfulSince = nil
@@ -676,24 +1156,89 @@ final class DesktopCat {
         poseUntil = Date().addingTimeInterval(.random(in: 3...6))
     }
 
+    /// Back at the Mac after a lock: a healthy dog runs over to the pointer and barks hello.
+    private func greet() {
+        guard window != nil, !brain.isNight, !brain.isAway, !brain.isSick, brain.mood != .lonely,
+              settings.catPlayfulness != .off, playUntil == nil else { return }
+        playUntil = Date().addingTimeInterval(6)
+        targetX = nil
+        state.playfulSince = Date()
+        brain.pose = .walk
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.2) { [weak self] in
+            guard let self, self.playUntil == nil, self.brain.pose == .sit else { return }
+            self.brain.pose = .bark
+            self.poseUntil = Date().addingTimeInterval(2.5)
+        }
+    }
+
     private func decide(screen: NSScreen) {
-        let hour = Calendar.current.component(.hour, from: Date())
-        let night = hour >= 23 || hour < 7
-        // In the mood: a happy, awake cat now and then decides the pointer is prey.
-        if settings.catPlayfulness != .off, !night, brain.mood == .happy, Date() >= nextPlay {
+        let now = Date()
+        func rest(_ pose: CatBrain.Pose, _ seconds: ClosedRange<TimeInterval>) {
+            brain.pose = pose
+            targetX = nil
+            poseUntil = now.addingTimeInterval(.random(in: seconds))
+        }
+        func walk(_ pose: CatBrain.Pose = .walk) {
+            brain.pose = pose
+            let range = walkRange(screen)
+            // Sniffing is pottering about nearby; walking goes somewhere.
+            let reach: CGFloat = pose == .sniff ? 140 : .greatestFiniteMagnitude
+            targetX = CGFloat.random(in: max(range.lowerBound, x - reach)...min(range.upperBound, x + reach))
+        }
+
+        // Bedtime to wake-up it sleeps, right through. Woken, it settles straight back down.
+        if brain.isNight {
+            sleptTonight = true
+            rest(.sleep, 600...600)
+            return
+        }
+        // Morning: a long stretch before anything else.
+        if sleptTonight {
+            sleptTonight = false
+            rest(.stretch, 3...4)
+            return
+        }
+        if brain.isSick {
+            rest(.sick, 60...120)
+            return
+        }
+        // In the mood: a happy, fit dog now and then decides the pointer is prey.
+        if settings.catPlayfulness != .off, brain.canPlay, now >= nextPlay {
             beginPlay()
             return
         }
-        let roll = Double.random(in: 0..<1)
-        if brain.pose == .walk || roll < (night ? 0.55 : 0.25) {
-            // Rest: a nap, or a sit.
-            let nap = roll < (night ? 0.45 : 0.12) || brain.happiness < 0.2
-            brain.pose = nap ? .sleep : .sit
-            poseUntil = Date().addingTimeInterval(nap ? .random(in: 40...120) : .random(in: 4...12))
-        } else {
-            brain.pose = .walk
-            targetX = CGFloat.random(in: walkRange(screen))
+        let after = brain.pose
+        // After a nap it stretches.
+        if after == .sleep { rest(.stretch, 2.5...3.5); return }
+
+        // What it feels like doing, weighted by how it is.
+        var options: [(weight: Double, act: () -> Void)] = []
+        switch brain.mood {
+        case .lonely:
+            options = [(4, { rest(.lie, 30...90) }), (3, { rest(.sleep, 120...300) }), (2, { rest(.sit, 10...20) }),
+                       (1, { walk(.sniff) })]
+        case .stuffed:
+            options = [(6, { rest(.lie, 40...90) }), (2, { rest(.sleep, 120...240) }), (1, { rest(.sit, 8...15) })]
+        default:
+            let heavy = brain.isObese ? 3.0 : (brain.isOverweight ? 1.8 : 1)
+            let hungry = brain.isHungry
+            options = [
+                (after.travels ? 1 : 4 / heavy, { walk() }),
+                (after.travels ? 0.5 : 1.6, { walk(.sniff) }),
+                (2, { rest(.sit, 4...12) }),
+                (1.4 * heavy, { rest(.lie, 15...45) }),
+                (0.6, { rest(.scratch, 1.6...2.6) }),
+                (0.5 * heavy, { rest(.sleep, 180...480) }),
+                (hungry ? 1.5 : (brain.mood == .happy ? 0.35 : 0), { rest(.bark, 1.8...2.8) }),
+            ]
         }
+        let total = options.reduce(0) { $0 + $1.weight }
+        var roll = Double.random(in: 0..<total)
+        for option in options {
+            roll -= option.weight
+            if roll < 0 { option.act(); return }
+        }
+        rest(.sit, 4...8)
     }
 }
 
@@ -737,13 +1282,13 @@ private struct DesktopCatView: View {
         if state.hovering {
             CatCard(brain: brain, name: settings.catName, compact: true)
                 .scaleEffect(scale)
-                .frame(height: 56 * scale)
+                .frame(height: 74 * scale)
                 .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: state.cardBelow ? .top : .bottom)))
                 .onAppear { state.showCard = true }
                 .onDisappear { state.showCard = false }
-        } else if brain.isHungry, brain.pose != .eat, !state.cardBelow {
-            // A thought bubble with a bone in it.
-            Text("🦴")
+        } else if let thought, brain.pose != .eat, brain.pose != .sleep, !state.cardBelow {
+            // A thought bubble: a bone when hungry, a broken heart when lonely, a fever when sick.
+            Text(thought)
                 .font(.system(size: 12 * scale))
                 .padding(6 * scale)
                 .background(Circle().fill(.white.opacity(0.9)))
@@ -751,12 +1296,23 @@ private struct DesktopCatView: View {
         }
     }
 
+    private var thought: String? {
+        switch brain.mood {
+        case .sick: "🤒"
+        case .hungry, .starving: "🦴"
+        case .lonely: "💔"
+        case .stuffed: "😣"
+        default: nil
+        }
+    }
+
     private func cat(_ scale: CGFloat) -> some View {
         ZStack(alignment: .top) {
             TimelineView(.animation(minimumInterval: 1 / 30)) { context in
                 let playing = state.playfulSince != nil
-                let t = context.date.timeIntervalSinceReferenceDate * (brain.pose == .walk ? (playing ? 10 : 7) : 2)
-                CatFigure(pose: brain.pose, mood: brain.mood, color: settings.catColor, time: t)
+                let t = context.date.timeIntervalSinceReferenceDate
+                    * (brain.pose.travels ? (playing ? 10 : 7) * brain.pace : 2)
+                CatFigure(pose: brain.pose, mood: brain.mood, color: settings.catColor, time: t, girth: brain.girth)
                     .scaleEffect(x: state.facingRight ? 1 : -1, y: 1)
                     .overlay(alignment: .topTrailing) {
                         // A short sparkle when the playful mood starts.
@@ -778,31 +1334,53 @@ private struct DesktopCatView: View {
     }
 }
 
-/// Name, mood, fullness and happiness, with Feed. Used over the desktop pet and in the Widgets tab.
+/// Name, mood, food, love and health, with Feed (and Vet when it's ill). Used over the desktop
+/// pet and in the Widgets tab.
 struct CatCard: View {
     @ObservedObject var brain: CatBrain
     let name: String
     var compact = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 5) {
-                    Text(name).font(.system(size: 12, weight: .bold))
-                    Text(brain.mood.title)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(brain.isHungry ? .orange : .green)
+        TimelineView(.periodic(from: .now, by: 30)) { _ in
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 5) {
+                        Text(name).font(.system(size: 12, weight: .bold))
+                        Text(brain.isAway ? "At the vet" : (brain.isNight && brain.pose == .sleep ? "Asleep" : brain.mood.title))
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(moodTint)
+                    }
+                    meter(symbol: "fork.knife", value: brain.fullness,
+                          tint: brain.mood == .stuffed ? .red : (brain.isHungry ? .orange : .green),
+                          help: brain.hungerText)
+                    meter(symbol: "heart.fill", value: brain.affection, tint: Color(red: 1, green: 0.4, blue: 0.55),
+                          help: brain.mood == .lonely ? "Lonely: pet it" : "Love")
+                    meter(symbol: "cross.fill", value: brain.health, tint: brain.health < 0.55 ? .red : .mint,
+                          help: brain.healthText)
+                    Text(status)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(1)
                 }
-                meter(symbol: "fork.knife", value: brain.fullness, tint: brain.isHungry ? .orange : .green,
-                      help: brain.hungerText)
-                meter(symbol: "heart.fill", value: brain.happiness, tint: Color(red: 1, green: 0.4, blue: 0.55),
-                      help: "Happiness")
+                if brain.isAway {
+                    Image(systemName: "cross.case.fill").font(.system(size: 18)).foregroundStyle(.green).frame(width: 58)
+                } else if brain.isSick {
+                    Button { brain.takeToVet() } label: {
+                        Label("Vet", systemImage: "cross.case.fill").font(.system(size: 10.5, weight: .semibold))
+                    }
+                    .buttonStyle(CatButtonStyle(fill: Color(red: 0.95, green: 0.35, blue: 0.4)))
+                    .help("The vet keeps \(name) for 20 minutes and sends it home better")
+                } else {
+                    // Feed only: petting is a click on the pet itself.
+                    Button { brain.feed() } label: {
+                        Label("Feed", systemImage: "fork.knife").font(.system(size: 10.5, weight: .semibold))
+                    }
+                    .buttonStyle(CatButtonStyle(fill: brain.fullness > 0.55 || brain.stomach > 0.05
+                        ? Color(white: 0.4) : Color(red: 0.35, green: 0.62, blue: 1)))
+                    .help(brain.fullness > 0.55 ? "\(name) isn't hungry: extra food puts weight on" : "Feed \(name)")
+                }
             }
-            // Feed only: petting is a click on the pet itself.
-            Button { brain.feed() } label: {
-                Label("Feed", systemImage: "fork.knife").font(.system(size: 10.5, weight: .semibold))
-            }
-            .buttonStyle(CatButtonStyle(fill: Color(red: 0.35, green: 0.62, blue: 1)))
         }
         .foregroundStyle(.white)
         .padding(.horizontal, compact ? 10 : 0)
@@ -815,6 +1393,29 @@ struct CatCard: View {
             }
         }
         .fixedSize()
+    }
+
+    private var moodTint: Color {
+        if brain.isAway { return .green }
+        switch brain.mood {
+        case .happy, .content: return .green
+        case .hungry, .stuffed: return .orange
+        case .starving, .sick: return .red
+        case .lonely: return .pink
+        }
+    }
+
+    /// One line on the thing most worth knowing.
+    private var status: String {
+        if let back = brain.awayUntil, brain.isAway {
+            return "Back at \(back.formatted(date: .omitted, time: .shortened))"
+        }
+        if brain.isSick { return "Needs the vet, or rest and care" }
+        if brain.mood == .stuffed { return "Overfed: no food for a while" }
+        if brain.isOverweight { return "\(brain.weightText): feed only when hungry" }
+        if brain.weight < 0.22 { return "Underweight: feed it more often" }
+        if let note = brain.vetNote, brain.health < 0.95 { return note }
+        return brain.weightText
     }
 
     private func meter(symbol: String, value: Double, tint: Color, help: String) -> some View {

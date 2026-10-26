@@ -19,6 +19,7 @@ static GetInfoFn getInfo;
 static GetPlayingFn getPlaying;
 static GetClientFn getClient;
 static ClientBundleFn clientBundle;
+static ClientBundleFn clientParentBundle;
 static NSString *lastArtworkHash;
 
 static void load(void) {
@@ -27,6 +28,7 @@ static void load(void) {
     getPlaying = (GetPlayingFn)dlsym(mr, "MRMediaRemoteGetNowPlayingApplicationIsPlaying");
     getClient = (GetClientFn)dlsym(mr, "MRMediaRemoteGetNowPlayingClient");
     clientBundle = (ClientBundleFn)dlsym(mr, "MRNowPlayingClientGetBundleIdentifier");
+    clientParentBundle = (ClientBundleFn)dlsym(mr, "MRNowPlayingClientGetParentAppBundleIdentifier");
 }
 
 static void emit(NSDictionary *object) {
@@ -49,10 +51,12 @@ static void report(void) {
     dispatch_queue_t q = dispatch_get_main_queue();
     getInfo(q, ^(NSDictionary *info) {
         getPlaying(q, ^(Boolean playing) {
-            void (^finish)(NSString *) = ^(NSString *bundle) {
+            void (^finish)(NSString *, NSString *) = ^(NSString *bundle, NSString *parent) {
                 NSMutableDictionary *out = [NSMutableDictionary dictionary];
                 out[@"playing"] = @(playing);
                 if (bundle) out[@"bundle"] = bundle;
+                // A web page playing media reports the browser as its parent.
+                if (parent) out[@"parentBundle"] = parent;
                 if (info) {
                     id v;
                     if ((v = info[@"kMRMediaRemoteNowPlayingInfoTitle"])) out[@"title"] = v;
@@ -61,6 +65,10 @@ static void report(void) {
                     if ((v = info[@"kMRMediaRemoteNowPlayingInfoDuration"])) out[@"duration"] = v;
                     if ((v = info[@"kMRMediaRemoteNowPlayingInfoElapsedTime"])) out[@"elapsed"] = v;
                     if ((v = info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"])) out[@"rate"] = v;
+                    // What kind of media it is, for telling a song from a film.
+                    if ((v = info[@"kMRMediaRemoteNowPlayingInfoMediaType"])) out[@"mediaType"] = [v description];
+                    if ((v = info[@"kMRMediaRemoteNowPlayingInfoIsMusicApp"])) out[@"isMusicApp"] = v;
+                    if ((v = info[@"kMRMediaRemoteNowPlayingInfoGenre"])) out[@"genre"] = v;
                     NSDate *stamp = info[@"kMRMediaRemoteNowPlayingInfoTimestamp"];
                     if ([stamp isKindOfClass:[NSDate class]]) out[@"timestamp"] = @(stamp.timeIntervalSince1970);
                     NSData *art = info[@"kMRMediaRemoteNowPlayingInfoArtworkData"];
@@ -76,9 +84,12 @@ static void report(void) {
                 emit(out);
             };
             if (getClient && clientBundle) {
-                getClient(q, ^(id client) { finish(client ? clientBundle(client) : nil); });
+                getClient(q, ^(id client) {
+                    finish(client ? clientBundle(client) : nil,
+                           client && clientParentBundle ? clientParentBundle(client) : nil);
+                });
             } else {
-                finish(nil);
+                finish(nil, nil);
             }
         });
     });

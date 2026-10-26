@@ -623,6 +623,12 @@ private struct CatPane: View {
     @ObservedObject var settings: AppSettings
     let brain: CatBrain?
 
+    private func hour(_ h: Int) -> String {
+        var parts = DateComponents()
+        parts.hour = h
+        return (Calendar.current.date(from: parts) ?? Date()).formatted(date: .omitted, time: .shortened)
+    }
+
     var body: some View {
         Card(title: "Your dog") {
             ToggleRow(title: "Dog on the desktop", detail: "Wanders, naps and asks for food. Click it to pet it.",
@@ -664,6 +670,21 @@ private struct CatPane: View {
                 .pickerStyle(.segmented).labelsHidden().frame(width: 220)
             }
             Divider()
+            Row(title: "Bedtime", detail: "It sleeps right through from \(hour(settings.catBedtime)) to \(hour(settings.catWakeTime)), and wakes with a stretch.") {
+                HStack(spacing: 6) {
+                    Picker("", selection: $settings.catBedtime) {
+                        ForEach(18..<24, id: \.self) { Text(hour($0)).tag($0) }
+                        ForEach(0..<3, id: \.self) { Text(hour($0)).tag($0) }
+                    }
+                    .labelsHidden().frame(width: 90)
+                    Text("to").foregroundStyle(.secondary)
+                    Picker("", selection: $settings.catWakeTime) {
+                        ForEach(4..<12, id: \.self) { Text(hour($0)).tag($0) }
+                    }
+                    .labelsHidden().frame(width: 90)
+                }
+            }
+            Divider()
             Row(title: "Size", detail: settings.catPlacement == .notch
                 ? "Fitted to the notch" : "\(Int(settings.catSize * 100))%") {
                 Slider(value: $settings.catSize, in: 0.7...1.6, step: 0.05).frame(width: 180)
@@ -674,8 +695,8 @@ private struct CatPane: View {
             Card(title: "How it's doing") {
                 HStack(spacing: 18) {
                     TimelineView(.animation(minimumInterval: 1 / 20)) { context in
-                        CatFigure(pose: .sit, mood: brain.mood, color: settings.catColor,
-                                  time: context.date.timeIntervalSinceReferenceDate * 2)
+                        CatFigure(pose: brain.isSick ? .sick : .sit, mood: brain.mood, color: settings.catColor,
+                                  time: context.date.timeIntervalSinceReferenceDate * 2, girth: brain.girth)
                     }
                     .frame(width: 110, height: 80)
                     .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.75)))
@@ -685,7 +706,8 @@ private struct CatPane: View {
                         .environment(\.colorScheme, .dark)
                 }
                 .padding(.vertical, 10)
-                Text("A full bowl lasts about ten hours. A hungry dog thinks of a bone, and the notch tells you once.")
+                Text("A full bowl lasts about ten waking hours; time stops while the Mac sleeps. Feed it when it's hungry: food past full makes it fat and, twice in a row, sick. Pet it, or it gets lonely. A dog kept fat, hungry or lonely falls ill and needs the vet.")
+                    .fixedSize(horizontal: false, vertical: true)
                     .font(.system(size: 11)).foregroundStyle(.secondary).padding(.bottom, 10)
             }
         }

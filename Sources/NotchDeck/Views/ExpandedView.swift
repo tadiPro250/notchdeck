@@ -27,7 +27,7 @@ struct ExpandedView: View {
                 case .desk:
                     DeskView(model: model, services: services, settings: settings)
                 case .clipboard:
-                    ClipboardView(history: services.clipboard, settings: settings)
+                    ClipboardView(history: services.clipboard, settings: settings, model: model)
                 case .mirror:
                     MirrorView(camera: services.camera)
                 case .controls:

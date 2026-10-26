@@ -95,7 +95,7 @@ struct NotchRootView: View {
     private func springFor(_ model: NotchModel) -> Animation {
         let speed = min(max(settings.animationSpeed, 0.5), 2)
         guard settings.bouncyAnimation else { return .spring(response: 0.38 * speed, dampingFraction: 1) }
-        return model.isExpanded ? .spring(response: 0.5 * speed, dampingFraction: 0.68)
+        return model.isExpanded ? .spring(response: 0.42 * speed, dampingFraction: 0.72)
                                 : .spring(response: 0.3 * speed, dampingFraction: 0.82)
     }
 

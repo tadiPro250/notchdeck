@@ -19,7 +19,8 @@ final class LyricsService: ObservableObject {
     init(player: NowPlaying, settings: AppSettings, live: Bool = true) {
         guard live else { return }
         player.$track
-            .map { $0.map { ($0.identity, $0.title, $0.artist, $0.album, $0.duration) } }
+            // Videos have no lyrics to find.
+            .map { $0.flatMap { $0.isMusic ? ($0.identity, $0.title, $0.artist, $0.album, $0.duration) : nil } }
             .removeDuplicates { $0?.0 == $1?.0 }
             .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
             .sink { [weak self] info in

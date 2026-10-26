@@ -35,6 +35,9 @@ struct Track: Equatable {
     var appName: String
     var artworkURL: String?
     var fetchedAt: Date
+    /// A song, as opposed to a film, a show or a video in a browser tab. Only songs get the
+    /// record player on the lock screen and a lyrics search.
+    var isMusic = true
 
     var identity: String { "\(bundleID ?? appName)|\(title)|\(artist)|\(album)" }
 
@@ -124,7 +127,7 @@ final class NowPlaying: ObservableObject {
         let next = Track(title: title, artist: update.artist ?? "", album: update.album ?? "",
                          duration: update.duration ?? 0, position: position, isPlaying: update.playing,
                          player: player, bundleID: update.bundleID, appName: appName,
-                         artworkURL: nil, fetchedAt: Date())
+                         artworkURL: nil, fetchedAt: Date(), isMusic: Self.isMusic(update))
         setTrack(next)
         if let data = update.artwork, let image = NSImage(data: data) {
             artworkKey = next.identity
@@ -277,6 +280,81 @@ final class NowPlaying: ObservableObject {
         }
     }
 
+    // MARK: Song or video
+
+    static let musicApps: Set<String> = [
+        "com.spotify.client", "com.apple.Music", "com.apple.iTunes", "com.tidal.desktop", "com.deezer.deezer-desktop",
+        "com.amazon.music", "com.github.th-ch.youtube-music", "com.ytmdesktop.app", "sh.cider.electron",
+        "com.cider.Cider", "co.brushedtype.doppler-macos", "com.coppertino.Vox", "com.swinsian.Swinsian",
+        "tv.plex.plexamp", "com.qobuz.QobuzDesktop", "com.soundcloud.desktop", "com.apple.podcasts",
+    ]
+    static let videoApps: Set<String> = [
+        "com.apple.QuickTimePlayerX", "com.apple.TV", "com.netflix.Netflix", "com.colliderli.iina", "org.videolan.vlc",
+        "com.firecore.infuse", "tv.plex.desktop", "com.amazon.aiv.AIVApp", "com.disney.disneyplus", "com.movist.MovistPro",
+        "com.eltima.elmedia-video", "io.mpv", "com.apple.FaceTime",
+    ]
+    static let browsers: [String] = [
+        "com.apple.Safari", "com.apple.WebKit", "com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac",
+        "org.mozilla.firefox", "company.thebrowser", "com.vivaldi.Vivaldi", "com.operasoftware.Opera",
+        "com.duckduckgo.macos.browser", "com.kagi.kagimacOS", "app.zen-browser",
+    ]
+
+    /// Whether what's playing is a song. MediaRemote says so outright for some players; for a web
+    /// page it rarely does, and Netflix, YouTube and every other video site look like a "track"
+    /// with a title. So a tab counts as music only with the marks of a song: an artist AND an
+    /// album (Spotify, YouTube Music and Apple Music on the web all send both), or a YouTube
+    /// "– Topic" / VEVO channel. Anything over 15 minutes outside a music app is a video.
+    static func isMusic(_ u: MediaRemoteBridge.Update) -> Bool {
+        let type = u.mediaType?.lowercased() ?? ""
+        if type.contains("video") || type.contains("movie") { return false }
+        let bundle = u.bundleID ?? "", parent = u.parentBundleID ?? ""
+        let inBrowser = browsers.contains { bundle.hasPrefix($0) || parent.hasPrefix($0) }
+        // A browser may call any tab "music"; only the tab's own details are trusted there.
+        if !inBrowser, type.contains("music") || u.isMusicApp == true { return true }
+        if musicApps.contains(bundle) || musicApps.contains(parent) { return true }
+        if videoApps.contains(bundle) || videoApps.contains(parent) { return false }
+        let artist = (u.artist ?? "").trimmingCharacters(in: .whitespaces)
+        let album = (u.album ?? "").trimmingCharacters(in: .whitespaces)
+        let duration = u.duration ?? 0
+        if duration > 15 * 60 { return false }
+        if inBrowser {
+            if artist.hasSuffix("- Topic") || artist.uppercased().hasSuffix("VEVO") { return true }
+            return !artist.isEmpty && !album.isEmpty
+        }
+        // Some other app: a song has an artist and a song's length.
+        return !artist.isEmpty && (duration == 0 || duration >= 30)
+    }
+
+    /// `--test-media`: what counts as a song.
+    static func selfTest() {
+        func u(_ bundle: String, parent: String? = nil, artist: String = "", album: String = "", duration: Double = 240,
+               type: String? = nil) -> MediaRemoteBridge.Update {
+            var x = MediaRemoteBridge.Update()
+            x.bundleID = bundle; x.parentBundleID = parent; x.title = "Title"; x.artist = artist; x.album = album
+            x.duration = duration; x.mediaType = type
+            return x
+        }
+        let cases: [(String, Bool, MediaRemoteBridge.Update)] = [
+            ("Spotify song", true, u("com.spotify.client", artist: "Shreya Ghoshal", album: "Singham", type: "kMRMediaRemoteNowPlayingInfoTypeAudio")),
+            ("Apple Music song", true, u("com.apple.Music", artist: "M83", album: "Hurry Up")),
+            ("Netflix in Chrome", false, u("com.google.Chrome", duration: 3200)),
+            ("Netflix in Chrome, short episode, no artist", false, u("com.google.Chrome", duration: 1300)),
+            ("YouTube video in Brave", false, u("com.brave.Browser", artist: "Some Channel", duration: 600)),
+            ("YouTube video in Safari, typed as music", false, u("com.apple.WebKit.GPU", parent: "com.apple.Safari", artist: "Channel", type: "MRMediaRemoteMediaTypeMusic")),
+            ("Spotify Web Player", true, u("com.google.Chrome", artist: "Coldplay", album: "Parachutes")),
+            ("YouTube auto-generated song", true, u("com.google.Chrome", artist: "Arijit Singh - Topic")),
+            ("film in QuickTime", false, u("com.apple.QuickTimePlayerX", duration: 5400)),
+            ("Netflix app", false, u("com.netflix.Netflix", artist: "", duration: 2700)),
+            ("video by media type", false, u("com.example.player", artist: "x", type: "kMRMediaRemoteNowPlayingInfoTypeVideo")),
+            ("unknown app, a song", true, u("com.example.player", artist: "Artist")),
+            ("unknown app, 2-hour mix", false, u("com.example.player", artist: "DJ", duration: 7200)),
+        ]
+        for (name, expected, update) in cases {
+            let got = isMusic(update)
+            print("\(got == expected ? "ok  " : "FAIL") \(name): \(got ? "song" : "video")")
+        }
+    }
+
     private static func appName(for bundleID: String) -> String? {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
         return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
@@ -320,6 +398,10 @@ final class MediaRemoteBridge {
         var timestamp: Date?
         var artwork: Data?
         var artworkHash: String?
+        var parentBundleID: String?
+        var mediaType: String?
+        var isMusicApp: Bool?
+        var genre: String?
     }
 
     var onUpdate: ((Update) -> Void)?
@@ -410,6 +492,10 @@ final class MediaRemoteBridge {
             update.timestamp = (object["timestamp"] as? Double).map(Date.init(timeIntervalSince1970:))
             update.artwork = (object["artwork"] as? String).flatMap { Data(base64Encoded: $0) }
             update.artworkHash = object["artworkHash"] as? String
+            update.parentBundleID = object["parentBundle"] as? String
+            update.mediaType = object["mediaType"] as? String
+            update.isMusicApp = (object["isMusicApp"] as? NSNumber)?.boolValue
+            update.genre = object["genre"] as? String
             onUpdate?(update)
         }
     }

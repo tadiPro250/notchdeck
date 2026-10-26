@@ -20,6 +20,9 @@ struct CalendarTabView: View {
                     Text(context.date, format: .dateTime.month(.wide).year())
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(look.theme.secondaryText)
+                    if calendar.access == .granted, !calendar.week.isEmpty {
+                        WeekStrip(days: calendar.week).padding(.top, 10)
+                    }
                     Spacer(minLength: 0)
                     Button { calendar.openCalendarApp() } label: {
                         Label("Open Calendar", systemImage: "arrow.up.forward.app")
@@ -27,7 +30,7 @@ struct CalendarTabView: View {
                     .buttonStyle(PillButtonStyle())
                 }
             }
-            .frame(width: 130, alignment: .leading)
+            .frame(width: 176, alignment: .leading)
 
             Group {
                 switch calendar.access {
@@ -38,7 +41,11 @@ struct CalendarTabView: View {
                     } else {
                         ScrollView(.vertical, showsIndicators: false) {
                             VStack(spacing: 6) {
-                                ForEach(calendar.events) { event in EventRow(event: event) }
+                                ForEach(calendar.events) { event in
+                                    EventRow(event: event, onJoin: { calendar.join(event) })
+                                        .onTapGesture { calendar.open(event) }
+                                        .help("Open in Calendar")
+                                }
                             }
                         }
                     }
@@ -76,8 +83,40 @@ struct CalendarTabView: View {
     }
 }
 
+/// The next seven days, with a dot per event (up to three).
+private struct WeekStrip: View {
+    let days: [CalendarDay]
+    @Environment(\.look) private var look
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(days) { day in
+                let today = Calendar.current.isDateInToday(day.date)
+                VStack(spacing: 2) {
+                    Text(day.date, format: .dateTime.weekday(.narrow))
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.45))
+                    Text(day.date, format: .dateTime.day())
+                        .font(.system(size: 11, weight: today ? .bold : .medium).monospacedDigit())
+                        .frame(width: 21, height: 21)
+                        .background(Circle().fill(today ? look.accent.opacity(0.35) : .clear))
+                    HStack(spacing: 1.5) {
+                        ForEach(Array(day.colors.enumerated()), id: \.offset) { _, color in
+                            Circle().fill(color).frame(width: 3.5, height: 3.5)
+                        }
+                    }
+                    .frame(height: 4)
+                }
+                .frame(maxWidth: .infinity)
+                .help(day.count == 0 ? "Free" : "\(day.count) event\(day.count == 1 ? "" : "s")")
+            }
+        }
+    }
+}
+
 private struct EventRow: View {
     let event: CalendarEvent
+    var onJoin: () -> Void = {}
     @Environment(\.look) private var look
 
     var body: some View {
@@ -93,6 +132,19 @@ private struct EventRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+            if event.joinURL != nil {
+                Button(action: onJoin) {
+                    Label("Join", systemImage: "video.fill")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .padding(.horizontal, 9)
+                        .frame(height: 22)
+                        .background(Capsule().fill(event.isJoinable ? Color.green.opacity(0.85) : Color.white.opacity(0.12)))
+                        .foregroundStyle(.white)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Join the call")
+            }
             if event.isNow {
                 Text("NOW")
                     .font(.system(size: 9, weight: .heavy))
@@ -104,6 +156,7 @@ private struct EventRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(look.theme.surface))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -112,7 +165,52 @@ private struct EventRow: View {
 struct ClipboardView: View {
     @ObservedObject var history: ClipboardHistory
     @ObservedObject var settings: AppSettings
+    var model: NotchModel?
     @Environment(\.look) private var look
+    @StateObject private var query = ViewState("")
+    @StateObject private var kind = ViewState<Kind>(.all)
+
+    /// What the history can be narrowed to.
+    enum Kind: String, CaseIterable {
+        case all, text, links, images, files
+        var symbol: String {
+            switch self {
+            case .all: "square.stack"
+            case .text: "text.alignleft"
+            case .links: "link"
+            case .images: "photo"
+            case .files: "doc"
+            }
+        }
+        var title: String { rawValue.capitalized }
+
+        func matches(_ content: ClipboardHistory.Item.Content) -> Bool {
+            switch (self, content) {
+            case (.all, _), (.images, .image), (.files, .file): return true
+            case (.text, .text(let t)): return !Self.isLink(t)
+            case (.links, .text(let t)): return Self.isLink(t)
+            default: return false
+            }
+        }
+
+        static func isLink(_ text: String) -> Bool {
+            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !t.contains(" ") && (t.hasPrefix("http://") || t.hasPrefix("https://") || t.hasPrefix("www."))
+        }
+    }
+
+    private var shown: [ClipboardHistory.Item] {
+        let q = query.value.trimmingCharacters(in: .whitespaces).lowercased()
+        return history.sortedItems.filter { item in
+            guard kind.value.matches(item.content) else { return false }
+            guard !q.isEmpty else { return true }
+            switch item.content {
+            case .text(let t): return t.lowercased().contains(q)
+            case .file(let url): return url.lastPathComponent.lowercased().contains(q)
+            case .image: return false
+            }
+        }
+    }
 
     var body: some View {
         if !settings.clipboardEnabled {
@@ -125,7 +223,14 @@ struct ClipboardView: View {
             HStack(spacing: 12) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(history.sortedItems) { item in
+                        if shown.isEmpty {
+                            VStack(spacing: 4) {
+                                Image(systemName: "magnifyingglass").font(.system(size: 18)).foregroundStyle(look.accent)
+                                Text("Nothing matches").font(.system(size: 12, weight: .semibold))
+                            }
+                            .frame(width: 300, height: 128)
+                        }
+                        ForEach(shown) { item in
                             ClipCard(item: item, copied: history.lastCopiedID == item.id,
                                      onPin: { history.togglePin(item) }) { history.copy(item) }
                                 .contextMenu {
@@ -137,10 +242,39 @@ struct ClipboardView: View {
                     }
                     .padding(.vertical, 2)
                 }
-                VStack(spacing: 8) {
-                    Text("\(history.items.count)")
-                        .font(.system(size: 22, weight: .semibold, design: .rounded))
-                    Text("items")
+                VStack(spacing: 7) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "magnifyingglass").font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.5))
+                        TextField("Search", text: $query.value)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11))
+                            .simultaneousGesture(TapGesture().onEnded { model?.requestKeyboard() })
+                        if !query.value.isEmpty {
+                            Button { query.value = "" } label: {
+                                Image(systemName: "xmark.circle.fill").font(.system(size: 10))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.white.opacity(0.5))
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(height: 24)
+                    .background(Capsule().fill(Color.white.opacity(0.1)))
+                    HStack(spacing: 2) {
+                        ForEach(Kind.allCases, id: \.self) { k in
+                            Button { kind.value = k } label: {
+                                Image(systemName: k.symbol)
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .frame(width: 20, height: 20)
+                                    .background(Circle().fill(kind.value == k ? look.accent.opacity(0.4) : .clear))
+                                    .contentShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .help(k.title)
+                        }
+                    }
+                    Text(shown.count == history.items.count ? "\(history.items.count) items" : "\(shown.count) of \(history.items.count)")
                         .font(.system(size: 10))
                         .foregroundStyle(look.theme.secondaryText)
                     Button { history.clear() } label: { Label("Clear", systemImage: "trash") }
@@ -153,7 +287,7 @@ struct ClipboardView: View {
                             .help("History is kept, encrypted, across restarts")
                     }
                 }
-                .frame(width: 80)
+                .frame(width: 118)
             }
         }
     }

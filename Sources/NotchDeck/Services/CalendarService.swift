@@ -10,8 +10,35 @@ struct CalendarEvent: Identifiable, Equatable {
     let isAllDay: Bool
     let color: Color
     let location: String?
+    /// The video-call link in the event (Zoom, Meet, Teams, Webex, FaceTime…), if there is one.
+    var joinURL: URL? = nil
+    /// EventKit's identifier, to open the event itself in Calendar.
+    var eventIdentifier: String? = nil
 
     var isNow: Bool { start <= Date() && end > Date() }
+    /// Starts within ten minutes, or is on now: time to join.
+    var isJoinable: Bool { joinURL != nil && start.timeIntervalSinceNow < 10 * 60 && end > Date() }
+
+    /// The first meeting link in any of these texts.
+    static func meetingLink(in texts: [String?]) -> URL? {
+        let pattern = #"https?://[^\s<>"']*(zoom\.us/(j|my|w)/|meet\.google\.com/|teams\.microsoft\.com/l/meetup-join|teams\.live\.com/meet|webex\.com/|facetime\.apple\.com/join|whereby\.com/|around\.co/|meet\.jit\.si/|chime\.aws/)[^\s<>"')\]]*"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        for case let text? in texts {
+            let range = NSRange(text.startIndex..., in: text)
+            if let match = regex.firstMatch(in: text, range: range), let r = Range(match.range, in: text) {
+                return URL(string: String(text[r]))
+            }
+        }
+        return nil
+    }
+}
+
+/// A day in the week strip: how many events it has and the colours of the first few.
+struct CalendarDay: Identifiable, Equatable {
+    let date: Date
+    let count: Int
+    let colors: [Color]
+    var id: Date { date }
 }
 
 /// Today's and tomorrow's events from every calendar the user has in Calendar.app.
@@ -19,6 +46,8 @@ final class CalendarService: ObservableObject {
     enum Access { case unknown, granted, denied }
 
     @Published private(set) var events: [CalendarEvent] = []
+    /// Today and the six days after it.
+    @Published private(set) var week: [CalendarDay] = []
     @Published private(set) var access: Access = .unknown
 
     /// Fired once per event, about five minutes before it starts.
@@ -54,6 +83,18 @@ final class CalendarService: ObservableObject {
                                            configuration: NSWorkspace.OpenConfiguration())
     }
 
+    /// Opens the event itself in Calendar, or just Calendar when it can't be found.
+    func open(_ event: CalendarEvent) {
+        guard let id = event.eventIdentifier?.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "ical://ekevent/\(id)?method=show&options=more") else { return openCalendarApp() }
+        if !NSWorkspace.shared.open(url) { openCalendarApp() }
+    }
+
+    func join(_ event: CalendarEvent) {
+        guard let url = event.joinURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     func openPrivacySettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")!)
     }
@@ -61,6 +102,12 @@ final class CalendarService: ObservableObject {
     func showPreview(_ events: [CalendarEvent]) {
         access = .granted
         self.events = events
+        let today = Calendar.current.startOfDay(for: Date())
+        week = (0..<7).map { offset in
+            let day = Calendar.current.date(byAdding: .day, value: offset, to: today) ?? today
+            let count = [2, 1, 0, 3, 0, 0, 1][offset]
+            return CalendarDay(date: day, count: count, colors: Array(repeating: Color.blue, count: min(count, 3)))
+        }
     }
 
     private func updateAccess() {
@@ -75,10 +122,18 @@ final class CalendarService: ObservableObject {
         guard access == .granted else { return }
         let now = Date()
         let startOfToday = Calendar.current.startOfDay(for: now)
-        guard let end = Calendar.current.date(byAdding: .day, value: 2, to: startOfToday) else { return }
-        let predicate = store.predicateForEvents(withStart: startOfToday, end: end, calendars: nil)
-        events = store.events(matching: predicate)
-            .filter { $0.endDate > now }
+        guard let end = Calendar.current.date(byAdding: .day, value: 2, to: startOfToday),
+              let weekEnd = Calendar.current.date(byAdding: .day, value: 7, to: startOfToday) else { return }
+        let all = store.events(matching: store.predicateForEvents(withStart: startOfToday, end: weekEnd, calendars: nil))
+        week = (0..<7).compactMap { offset in
+            guard let day = Calendar.current.date(byAdding: .day, value: offset, to: startOfToday),
+                  let next = Calendar.current.date(byAdding: .day, value: 1, to: day) else { return nil }
+            let onDay = all.filter { $0.startDate < next && $0.endDate > day }.sorted { $0.startDate < $1.startDate }
+            return CalendarDay(date: day, count: onDay.count,
+                               colors: onDay.prefix(3).map { Color(nsColor: $0.calendar?.color ?? .systemBlue) })
+        }
+        events = all
+            .filter { $0.startDate < end && $0.endDate > now }
             .sorted { ($0.isAllDay ? 0 : 1, $0.startDate) < ($1.isAllDay ? 0 : 1, $1.startDate) }
             .prefix(12)
             .map { event in
@@ -86,7 +141,9 @@ final class CalendarService: ObservableObject {
                               title: event.title ?? "Untitled", start: event.startDate, end: event.endDate,
                               isAllDay: event.isAllDay,
                               color: Color(nsColor: event.calendar?.color ?? .systemBlue),
-                              location: event.location?.isEmpty == false ? event.location : nil)
+                              location: event.location?.isEmpty == false ? event.location : nil,
+                              joinURL: CalendarEvent.meetingLink(in: [event.url?.absoluteString, event.location, event.notes]),
+                              eventIdentifier: event.eventIdentifier)
             }
         for event in events where !event.isAllDay && !notified.contains(event.id) {
             let lead = event.start.timeIntervalSince(now)

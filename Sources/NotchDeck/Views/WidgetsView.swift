@@ -558,8 +558,9 @@ private struct CatWidget: View {
         VStack(spacing: 2) {
             ZStack(alignment: .top) {
                 TimelineView(.animation(minimumInterval: 1 / 20)) { context in
-                    CatFigure(pose: brain.pose == .walk ? .sit : brain.pose, mood: brain.mood, color: settings.catColor,
-                              time: context.date.timeIntervalSinceReferenceDate * 2)
+                    CatFigure(pose: brain.pose.travels ? .sit : brain.pose, mood: brain.mood, color: settings.catColor,
+                              time: context.date.timeIntervalSinceReferenceDate * 2, girth: brain.girth)
+                        .opacity(brain.isAway ? 0.25 : 1)
                 }
                 .frame(width: 100, height: 72)
                 .onTapGesture { brain.pet() }
