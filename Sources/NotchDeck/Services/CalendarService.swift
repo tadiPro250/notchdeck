@@ -19,17 +19,42 @@ struct CalendarEvent: Identifiable, Equatable {
     /// Starts within ten minutes, or is on now: time to join.
     var isJoinable: Bool { joinURL != nil && start.timeIntervalSinceNow < 10 * 60 && end > Date() }
 
-    /// The first meeting link in any of these texts.
+    /// Hosts that run video calls, matched on the link's own host (or a subdomain of it), with
+    /// the path a meeting link has there, if it needs one.
+    private static let meetingHosts: [(host: String, path: String?)] = [
+        ("zoom.us", nil), ("meet.google.com", nil), ("teams.microsoft.com", "/l/meetup-join"),
+        ("teams.live.com", "/meet"), ("webex.com", nil), ("facetime.apple.com", "/join"), ("whereby.com", nil),
+        ("around.co", nil), ("meet.jit.si", nil), ("chime.aws", nil),
+    ]
+
+    /// The first meeting link in any of these texts. Every link is checked by its host, so a
+    /// page that merely mentions "zoom.us/j/" in its address isn't taken for a call.
     static func meetingLink(in texts: [String?]) -> URL? {
-        let pattern = #"https?://[^\s<>"']*(zoom\.us/(j|my|w)/|meet\.google\.com/|teams\.microsoft\.com/l/meetup-join|teams\.live\.com/meet|webex\.com/|facetime\.apple\.com/join|whereby\.com/|around\.co/|meet\.jit\.si/|chime\.aws/)[^\s<>"')\]]*"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
         for case let text? in texts {
-            let range = NSRange(text.startIndex..., in: text)
-            if let match = regex.firstMatch(in: text, range: range), let r = Range(match.range, in: text) {
-                return URL(string: String(text[r]))
+            for match in detector.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                guard let url = match.url, let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+                      let host = url.host?.lowercased() else { continue }
+                for entry in meetingHosts where host == entry.host || host.hasSuffix("." + entry.host) {
+                    if let path = entry.path, !url.path.lowercased().hasPrefix(path) { continue }
+                    if entry.host == "zoom.us", !["/j/", "/my/", "/w/", "/s/"].contains(where: url.path.lowercased().hasPrefix) {
+                        continue
+                    }
+                    return secure(url)
+                }
             }
         }
         return nil
+    }
+
+    /// Meeting links carry IDs and passcodes: an http:// one is opened over https:// instead, so
+    /// they never travel in the clear (every one of these services serves https).
+    private static func secure(_ url: URL) -> URL {
+        guard url.scheme?.lowercased() == "http", var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+        parts.scheme = "https"
+        return parts.url ?? url
     }
 }
 

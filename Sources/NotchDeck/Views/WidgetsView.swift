@@ -730,7 +730,7 @@ private struct QuickIcon: View {
         Button {
             NSWorkspace.shared.open(item.url)
         } label: {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: item.path))
+            Image(nsImage: IconCache.icon(forFile: item.path))
                 .resizable()
                 .frame(width: 26, height: 26)
                 .scaleEffect(hovering.value || targeted.value ? 1.35 : 1, anchor: .bottom)

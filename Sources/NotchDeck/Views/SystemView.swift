@@ -112,34 +112,76 @@ private struct TopProcesses: View {
     }
 
     private func sample() {
-        DispatchQueue.global(qos: .utility).async {
+        Self.sampler.async {
             let list = Self.top(4)
             DispatchQueue.main.async { if list != entries.value { entries.value = list } }
         }
     }
 
-    /// `ps` sorted by CPU, the busiest few; app helpers are shown under their app's name.
+    /// Runs the samples one at a time and keeps the last one to measure from.
+    private static let sampler = DispatchQueue(label: "notchdeck.top-processes")
+    private static var previous: (at: Date, cpuSeconds: [Int32: Double])?
+
+    /// The apps that used the most CPU since the last sample: each process's CPU time now minus
+    /// then, over the time between (ps's own %CPU is an average that lags well behind). A
+    /// browser's helper processes are added into the browser, so one app can't fill the list.
+    /// The first call only takes the starting sample.
     static func top(_ count: Int) -> [Entry] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-Aceo", "pid=,pcpu=,rss=,comm=", "-r"]
+        process.arguments = ["-Aceo", "pid=,time=,rss=,comm="]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return [] }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        let now = Date()
         let own = ProcessInfo.processInfo.processIdentifier
-        var result: [Entry] = []
+        var cpuSeconds: [Int32: Double] = [:]
+        struct Group { var pid: Int32; var cpu: Double; var memoryMB: Double; var lead: Double }
+        var groups: [String: Group] = [:]
+        let last = previous
         for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
             let parts = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
-            guard parts.count == 4, let pid = Int32(parts[0]), let cpu = Double(parts[1]), let rss = Double(parts[2]),
-                  pid != own, cpu >= 0.5 else { continue }
-            let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? String(parts[3])
-            result.append(Entry(pid: pid, name: name, cpu: cpu, memoryMB: rss / 1024))
-            if result.count == count { break }
+            guard parts.count == 4, let pid = Int32(parts[0]), let rss = Double(parts[2]), pid != own,
+                  let seconds = cpuTime(parts[1]) else { continue }
+            cpuSeconds[pid] = seconds
+            guard let last, let before = last.cpuSeconds[pid] else { continue }
+            let interval = max(now.timeIntervalSince(last.at), 0.5)
+            let percent = max(0, seconds - before) / interval * 100
+            let app = NSRunningApplication(processIdentifier: pid)
+            let name = app?.localizedName ?? appName(fromProcess: String(parts[3]))
+            var group = groups[name] ?? Group(pid: pid, cpu: 0, memoryMB: 0, lead: -1)
+            group.cpu += percent
+            group.memoryMB += rss / 1024
+            // Clicking brings forward the app itself when it's in the group, else the busiest process.
+            let rank = app?.activationPolicy == .regular ? Double.greatestFiniteMagnitude : percent
+            if rank > group.lead { group.lead = rank; group.pid = pid }
+            groups[name] = group
         }
-        return result
+        previous = (now, cpuSeconds)
+        return groups.filter { $0.value.cpu >= 0.5 }
+            .sorted { $0.value.cpu > $1.value.cpu }
+            .prefix(count)
+            .map { Entry(pid: $0.value.pid, name: $0.key, cpu: $0.value.cpu, memoryMB: $0.value.memoryMB) }
+    }
+
+    /// ps's CPU time, "12.34", "1:02.50" or "3:01:02.50", in seconds.
+    private static func cpuTime(_ text: Substring) -> Double? {
+        var total = 0.0
+        for part in text.split(separator: ":") {
+            guard let value = Double(part) else { return nil }
+            total = total * 60 + value
+        }
+        return total
+    }
+
+    /// "Brave Browser Helper (Renderer)" → "Brave Browser": a helper counts as its app.
+    private static func appName(fromProcess name: String) -> String {
+        if let range = name.range(of: " Helper") { return String(name[..<range.lowerBound]) }
+        if name.hasPrefix("com.apple.WebKit") { return "Safari (web pages)" }
+        return name
     }
 }
 

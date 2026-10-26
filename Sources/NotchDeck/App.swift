@@ -1,22 +1,35 @@
 import AppKit
 import ServiceManagement
 
+/// Counts failed cases across the `--test-*` self-tests.
+enum SelfTest {
+    private(set) static var failures = 0
+    static var status: Int32 { failures == 0 ? 0 : 1 }
+
+    /// "ok  " or "FAIL" for a printed line, counting the failures.
+    static func mark(_ passed: Bool) -> String {
+        if !passed { failures += 1 }
+        return passed ? "ok  " : "FAIL"
+    }
+}
+
 @main
 enum Main {
     static let delegate = AppDelegate()
 
     static func main() {
+        // Self-tests exit non-zero when any case fails, so a script or CI can rely on them.
         if CommandLine.arguments.contains("--test-media") {
             NowPlaying.selfTest()
-            return
+            exit(SelfTest.status)
         }
         if CommandLine.arguments.contains("--test-dog") {
             CatBrain.selfTest()
-            return
+            exit(SelfTest.status)
         }
         if CommandLine.arguments.contains("--test-hover") {
             HoverIntent.selfTest()
-            return
+            exit(SelfTest.status)
         }
         if let i = CommandLine.arguments.firstIndex(of: "--render-previews") {
             let dir = CommandLine.arguments.count > i + 1 ? CommandLine.arguments[i + 1] : "previews"
