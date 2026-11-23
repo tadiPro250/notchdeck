@@ -37,7 +37,7 @@ struct LockScreenView: View {
                     }
                     Spacer(minLength: 0)
                     HStack(spacing: 64 * k / 1.6) {
-                        Turntable(artwork: player.artwork, isPlaying: playing, accent: accent)
+                        Turntable(artwork: player.artwork, isPlaying: playing, accent: accent, track: player.track)
                             .scaleEffect(k, anchor: .topLeading)
                             .frame(width: 300 * k, height: 270 * k, alignment: .topLeading)
                         VStack(alignment: .leading, spacing: 0) {
@@ -256,22 +256,55 @@ final class TurntableMotor {
     var isStopped: Bool { speed == 0 }
 }
 
+/// Which song's record is on the platter, and its cover. A plain reference, so updating it while
+/// drawing triggers nothing.
+final class Platter {
+    var identity: String?
+    var artwork: NSImage?
+}
+
 struct Turntable: View {
     let artwork: NSImage?
     let isPlaying: Bool
     let accent: Color
+    /// The song on the platter: the needle tracks how far through it is, and a new one swaps the
+    /// record.
+    var track: Track? = nil
     @StateObject private var motor = ViewState(TurntableMotor())
     /// Keeps the timeline running while the platter coasts after a pause.
     @StateObject private var coasting = ViewState<Bool>(false)
+
+    /// The record actually on the platter. It lags the song by the length of a swap: the old
+    /// record stays on until it is lifted off.
+    @StateObject private var platter = ViewState(Platter())
+    /// 0 on the platter, 1 lifted clear of it.
+    @State private var recordLift: CGFloat = 0
+    /// True from the moment a new song is noticed until its record is down: the arm stays parked.
+    @State private var swapping = false
+    /// Counts swaps, so a skip during one cancels the rest of it.
+    @State private var swapGeneration = 0
 
     // Layout, in the turntable's 300 × 270 frame.
     private let center = CGPoint(x: 128, y: 135)
     private let radius: CGFloat = 112
     private let pivot = CGPoint(x: 266, y: 40)
     private let armLength: CGFloat = 178
-    /// Down is 0°; the needle sits on the outer grooves at this angle.
-    private let playAngle = 24.0
+    /// Down is 0°. At `leadInAngle` the needle sits in the outermost groove (about 105 pt from the
+    /// spindle); at `runOutAngle` it has reached the run-out by the label (about 34 pt). In
+    /// between it follows the song, so the arm creeps inward as the song plays, like a record.
+    private let leadInAngle = 17.5
+    private let runOutAngle = 43.5
     private let restAngle = -4.0
+
+    /// The needle's place for this moment of the song: the outer edge at the start, the label at
+    /// the end.
+    private func playAngle(at date: Date) -> Double {
+        guard let track, track.duration > 0 else { return leadInAngle }
+        let progress = min(max(track.position(at: date) / track.duration, 0), 1)
+        return leadInAngle + (runOutAngle - leadInAngle) * progress
+    }
+
+    private var armDown: Bool { isPlaying && !swapping }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -280,10 +313,23 @@ struct Turntable: View {
                 record.rotationEffect(.degrees(motor.value.advance(to: context.date, playing: isPlaying)))
             }
             .frame(width: radius * 2, height: radius * 2)
+            // Lifted off: up, a little larger (nearer the eye), and away.
+            .scaleEffect(1 + 0.08 * recordLift)
+            .offset(x: -26 * recordLift, y: -34 * recordLift)
+            .opacity(Double(1 - recordLift))
+            .shadow(color: .black.opacity(0.45 * Double(recordLift)), radius: 18, y: 14)
             .position(center)
             sheen
             spindle
-            tonearm
+            // Once a second is plenty: the arm crosses the record over a whole song.
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let angle = armDown ? playAngle(at: context.date) : restAngle
+                tonearm
+                    .rotationEffect(.degrees(angle), anchor: UnitPoint(x: pivot.x / 300, y: pivot.y / 270))
+                    // Swinging on and off the record is a spring; creeping inward is steady.
+                    .animation(.spring(response: 1.15, dampingFraction: 0.78), value: armDown)
+                    .animation(.linear(duration: 1), value: angle)
+            }
         }
         .frame(width: 300, height: 270)
         .onChange(of: isPlaying) { playing in
@@ -291,6 +337,52 @@ struct Turntable: View {
             coasting.value = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { coasting.value = false }
         }
+        .onChange(of: track?.identity) { identity in
+            guard identity != platter.value.identity else { return }
+            // Nothing on the platter yet, or the song went away: no ceremony.
+            guard platter.value.identity != nil, identity != nil else {
+                platter.value.identity = identity
+                return
+            }
+            swapRecord(to: identity)
+        }
+    }
+
+    /// The cover on the platter: the song's own while its record is on, the previous song's until
+    /// the swap puts the new one on (the new cover usually arrives with the new song).
+    private var discArtwork: NSImage? {
+        let p = platter.value
+        if p.identity == nil { p.identity = track?.identity }
+        if p.identity == track?.identity {
+            // Covers that land a moment after the song are the same record: just update it.
+            p.artwork = artwork
+        }
+        return p.artwork
+    }
+
+    /// The arm lifts and parks, the record comes off, the new album's record goes on, and the
+    /// needle drops into the outer groove.
+    private func swapRecord(to identity: String?) {
+        swapGeneration += 1
+        let generation = swapGeneration
+        swapping = true
+        func then(_ delay: Double, _ step: @escaping () -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard swapGeneration == generation else { return }
+                step()
+            }
+        }
+        // The arm springs back to its rest (about 0.7 s), then the record comes off.
+        then(0.7) {
+            withAnimation(.easeIn(duration: 0.45)) { recordLift = 1 }
+        }
+        // Out of sight: the new record, held where the old one went, comes down onto the platter.
+        then(1.2) {
+            platter.value.identity = identity
+            withAnimation(.easeOut(duration: 0.55)) { recordLift = 0 }
+        }
+        // Settled: the needle goes down at the edge.
+        then(1.85) { swapping = false }
     }
 
     private var plinth: some View {
@@ -318,8 +410,8 @@ struct Turntable: View {
         ZStack {
             Circle().fill(Color(white: 0.04))
             Group {
-                if let artwork {
-                    Image(nsImage: artwork).resizable().aspectRatio(contentMode: .fill)
+                if let disc = discArtwork {
+                    Image(nsImage: disc).resizable().aspectRatio(contentMode: .fill)
                 } else {
                     AngularGradient(colors: [Color(white: 0.1), Color(white: 0.18), Color(white: 0.1),
                                              Color(white: 0.16), Color(white: 0.1)], center: .center)
@@ -367,8 +459,7 @@ struct Turntable: View {
     }
 
     private var tonearm: some View {
-        let anchor = UnitPoint(x: pivot.x / 300, y: pivot.y / 270)
-        return ZStack(alignment: .topLeading) {
+        ZStack(alignment: .topLeading) {
             // Counterweight behind the pivot.
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(LinearGradient(colors: [Color(white: 0.55), Color(white: 0.3)], startPoint: .leading, endPoint: .trailing))
@@ -401,8 +492,6 @@ struct Turntable: View {
                 .position(pivot)
         }
         .frame(width: 300, height: 270)
-        .rotationEffect(.degrees(isPlaying ? playAngle : restAngle), anchor: anchor)
-        .animation(.spring(response: 1.15, dampingFraction: 0.78), value: isPlaying)
     }
 }
 
