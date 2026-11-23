@@ -308,6 +308,9 @@ final class CatBrain: ObservableObject {
 
     // MARK: Caring for it
 
+    /// Counts meals, so a meal's end belongs to the latest Feed.
+    private var meal = 0
+
     func feed() {
         guard !isAway else { return }
         decay()
@@ -327,8 +330,12 @@ final class CatBrain: ObservableObject {
         } else {
             pose = .eat
             save()
+            // Each Feed starts its own meal; only the last one's timer ends it, so a second Feed
+            // a moment later isn't cut short by the first one's.
+            meal += 1
+            let thisMeal = meal
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) { [weak self] in
-                guard let self, self.pose == .eat else { return }
+                guard let self, self.meal == thisMeal, self.pose == .eat else { return }
                 self.pose = self.stomach > 0.05 ? .lie : .sit
                 self.onInterrupt?(self.isNight ? 6 : .random(in: 4...8))
             }
@@ -990,9 +997,10 @@ final class DesktopCat {
         let s = catScale(screen)
         if onNotch {
             // The cat on top, the card hanging below it into the desktop when hovered.
-            return CGSize(width: 250, height: Self.figure.height * s + 98)
+            return CGSize(width: max(250, CatCard.compactWidth + 16), height: Self.figure.height * s + 98)
         }
-        return CGSize(width: Self.base.width * s, height: Self.base.height * s)
+        // Never narrower than the card, or its sides are cut off by the window.
+        return CGSize(width: max(Self.base.width, CatCard.compactWidth + 16) * s, height: Self.base.height * s)
     }
 
     /// The x range the cat may walk in. On the notch: from a little left of it to a little right,
@@ -1419,9 +1427,13 @@ struct CatCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 5) {
                         Text(name).font(.system(size: 12, weight: .bold))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                         Text(brain.isAway ? "At the vet" : (brain.isNight && brain.pose == .sleep ? "Asleep" : brain.mood.title))
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(moodTint)
+                            .lineLimit(1)
+                            .fixedSize()
                     }
                     meter(symbol: "fork.knife", value: brain.fullness,
                           tint: brain.mood == .stuffed ? .red : (brain.isHungry ? .orange : .green),
@@ -1434,7 +1446,11 @@ struct CatCard: View {
                         .font(.system(size: 9, weight: .medium))
                         .foregroundStyle(.white.opacity(0.6))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
+                // A fixed width: the mood, the status line and the button change as it eats, and a
+                // card sized to its words grew and shrank under the pointer with every Feed.
+                .frame(width: Self.infoWidth(compact: compact), alignment: .leading)
                 if brain.isAway {
                     Image(systemName: "cross.case.fill").font(.system(size: 18)).foregroundStyle(.green).frame(width: 58)
                 } else if brain.isSick {
@@ -1466,6 +1482,11 @@ struct CatCard: View {
         }
         .fixedSize()
     }
+
+    /// Room for the longest status ("Needs the vet, or rest and care") beside the meters.
+    static func infoWidth(compact: Bool) -> CGFloat { compact ? 138 : 128 }
+    /// The whole compact card: the info column, the gap, the 58 pt button and the padding.
+    static let compactWidth: CGFloat = infoWidth(compact: true) + 10 + 58 + 2 * 10
 
     private var moodTint: Color {
         if brain.isAway { return .green }
