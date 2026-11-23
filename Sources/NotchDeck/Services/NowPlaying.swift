@@ -74,6 +74,15 @@ final class NowPlaying: ObservableObject {
     private var timer: Timer?
     private var artworkKey: String?
     private var lastPlayer: MediaPlayer?
+    /// The system's own Now Playing item, kept while a song from Spotify or Music is shown over
+    /// it, so the notch can return to it when the song stops.
+    private var remoteTrack: Track?
+    private var remoteArtwork: NSImage?
+    /// A song playing in Spotify or Music that wins over the system's item when that item is a
+    /// video, a podcast or anything else that isn't a playing song. Nil when the system's item
+    /// is shown. Commands then go to the song's app, not to the video.
+    private var musicOverride: Track?
+    private var overriding: Bool { musicOverride != nil }
     private var observers: [NSObjectProtocol] = []
     private let bridge = MediaRemoteBridge()
 
@@ -106,8 +115,9 @@ final class NowPlaying: ObservableObject {
     var installedPlayers: [MediaPlayer] { MediaPlayer.allCases.filter { $0.appURL != nil } }
 
     func refresh() {
-        // The bridge pushes changes itself; scripting is only the fallback.
-        guard !usesSystemNowPlaying else { return }
+        // The bridge pushes changes itself. Scripting is the fallback, and while the system's item
+        // isn't a playing song it is also how a song in Spotify or Music gets priority.
+        if usesSystemNowPlaying, let remote = remoteTrack, remote.isMusic, remote.isPlaying, !overriding { return }
         queue.async { [weak self] in
             // Only ask running players: `tell application` would launch one that isn't.
             let tracks = MediaPlayer.allCases.filter(\.isRunning).compactMap(Self.query)
@@ -120,6 +130,9 @@ final class NowPlaying: ObservableObject {
     private func applyRemote(_ update: MediaRemoteBridge.Update) {
         guard let title = update.title, !title.isEmpty else {
             // Nothing from the system (or the system withholds it): let scripting answer.
+            remoteTrack = nil
+            remoteArtwork = nil
+            musicOverride = nil
             if usesSystemNowPlaying {
                 usesSystemNowPlaying = false
                 setTrack(nil)
@@ -138,18 +151,61 @@ final class NowPlaying: ObservableObject {
                          duration: update.duration ?? 0, position: position, isPlaying: update.playing,
                          player: player, bundleID: update.bundleID, appName: appName,
                          artworkURL: nil, fetchedAt: Date(), kind: Self.kind(update))
-        setTrack(next)
+        let sameItem = remoteTrack?.identity == next.identity
+        remoteTrack = next
         if let data = update.artwork, let image = NSImage(data: data) {
-            artworkKey = next.identity
-            setArtwork(image)
-        } else if update.artworkHash == nil, artworkKey != next.identity {
-            artworkKey = next.identity
-            setArtwork(nil)
+            remoteArtwork = image
+        } else if update.artworkHash == nil, !sameItem {
+            remoteArtwork = nil
+        }
+        if next.isMusic, next.isPlaying {
+            // A song from the system wins outright.
+            musicOverride = nil
+            showRemote()
+        } else if !overriding {
+            showRemote()
+            // A video or a podcast: is a song playing in Spotify or Music meanwhile?
+            refresh()
+        }
+    }
+
+    /// Shows the system's Now Playing item (and its artwork).
+    private func showRemote() {
+        guard let remote = remoteTrack else { return }
+        setTrack(remote)
+        if artworkKey != remote.identity || artwork !== remoteArtwork {
+            artworkKey = remote.identity
+            setArtwork(remoteArtwork)
         }
     }
 
     private func applyScripted(_ tracks: [Track]) {
-        guard !usesSystemNowPlaying else { return }
+        if usesSystemNowPlaying {
+            // Only a song that's actually playing takes over from the system's item, and only
+            // while that item isn't itself a playing song.
+            let remoteIsSong = remoteTrack.map { $0.isMusic && $0.isPlaying } ?? false
+            let remotePlaying = remoteTrack?.isPlaying ?? false
+            // A song paused from the notch stays shown (so play resumes it, not the video) unless
+            // the video is what's playing now.
+            let paused = overriding && !remotePlaying
+                ? tracks.first(where: { $0.player == musicOverride?.player }) : nil
+            let song = remoteIsSong ? nil : (tracks.first(where: \.isPlaying) ?? paused)
+            guard let song else {
+                if overriding {
+                    musicOverride = nil
+                    showRemote()
+                }
+                return
+            }
+            musicOverride = song
+            lastPlayer = song.player
+            setTrack(song)
+            if song.identity != artworkKey {
+                artworkKey = song.identity
+                loadScriptedArtwork(for: song)
+            }
+            return
+        }
         let chosen = tracks.first(where: \.isPlaying)
             ?? tracks.first(where: { $0.player == lastPlayer })
             ?? tracks.first
@@ -210,7 +266,7 @@ final class NowPlaying: ObservableObject {
     }
 
     private func send(remote: String, script: String) {
-        if usesSystemNowPlaying {
+        if usesSystemNowPlaying, !overriding {
             bridge.send(remote)
             return
         }
