@@ -130,6 +130,18 @@ enum Previews {
             save(lock, name: playing ? "d1-lock-playing" : "d2-lock-paused", size: screen, to: directory)
         }
 
+        // The needle at the start, middle and end of a song: outer groove to the label.
+        for (name, position) in [("d7-needle-start", 0.0), ("d8-needle-middle", 121.0), ("d9-needle-end", 242.0)] {
+            let song = Track(title: "Midnight City", artist: "M83", album: "Hurry Up, We're Dreaming",
+                             duration: 243, position: position, isPlaying: true, player: .spotify,
+                             bundleID: "com.spotify.client", appName: "Spotify", artworkURL: nil, fetchedAt: Date())
+            let deck = Turntable(artwork: sampleArtwork(), isPlaying: true, accent: Color(red: 1, green: 0.55, blue: 0.75),
+                                 track: song)
+                .padding(20)
+                .background(Color(red: 0.2, green: 0.12, blue: 0.2))
+            save(deck, name: name, size: CGSize(width: 340, height: 310), to: directory)
+        }
+
         // The cat in every pose.
         let cats = HStack(spacing: 20) {
             ForEach(Array([CatBrain.Pose.walk, .sit, .sleep, .eat].enumerated()), id: \.offset) { index, pose in
