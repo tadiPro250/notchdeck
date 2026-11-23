@@ -253,6 +253,9 @@ final class AppSettings: ObservableObject {
     @Published var visualizer: VisualizerStyle { didSet { save(visualizer.rawValue, "visualizer") } }
     @Published var showLiveActivity: Bool { didSet { save(showLiveActivity, "showLiveActivity") } }
     @Published var showLyrics: Bool { didSet { save(showLyrics, "showLyrics") } }
+    /// Lyrics in another language are shown in English: translated on the Mac, or spelled in
+    /// Latin letters where macOS has no translation for the language.
+    @Published var lyricsInEnglish: Bool { didSet { save(lyricsInEnglish, "lyricsInEnglish") } }
 
     // HUD
     @Published var replaceSystemHUD: Bool { didSet { save(replaceSystemHUD, "replaceSystemHUD") } }
@@ -396,6 +399,7 @@ final class AppSettings: ObservableObject {
         visualizer = choice("visualizer", .bars)
         showLiveActivity = value("showLiveActivity", true)
         showLyrics = value("showLyrics", true)
+        lyricsInEnglish = value("lyricsInEnglish", true)
 
         replaceSystemHUD = value("replaceSystemHUD", true)
         hudStyle = choice("hudStyle", .wings)

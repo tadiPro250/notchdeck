@@ -12,28 +12,64 @@ final class LyricsService: ObservableObject {
     @Published private(set) var plain: String?
     @Published private(set) var isLoading = false
 
+    /// What a lookup needs from the track.
+    private struct Song: Equatable {
+        let identity: String
+        let title: String
+        let artist: String
+        let album: String
+        let duration: Double
+
+        /// A lookup made before the player reported the song's length could only search, and a
+        /// search can return another cut of the song (a live take, a radio edit) whose timing
+        /// doesn't fit. So a song is looked up again once its length is known, and the two
+        /// answers are cached apart.
+        var key: String { "\(identity)|\(duration > 0 ? String(Int(duration.rounded())) : "?")" }
+        var knowsLength: Bool { duration > 0 }
+    }
+
     private var bag = Set<AnyCancellable>()
+    private var settings: AppSettings?
+    private var song: Song?
     private var currentKey: String?
     private var cache: [String: ([Line], String?)] = [:]
 
     init(player: NowPlaying, settings: AppSettings, live: Bool = true) {
         guard live else { return }
+        self.settings = settings
         player.$track
             // Videos have no lyrics to find.
-            .map { $0.flatMap { $0.isMusic ? ($0.identity, $0.title, $0.artist, $0.album, $0.duration) : nil } }
-            .removeDuplicates { $0?.0 == $1?.0 }
+            .map { $0.flatMap { $0.isMusic ? Song(identity: $0.identity, title: $0.title, artist: $0.artist,
+                                                   album: $0.album, duration: $0.duration) : nil } }
+            .removeDuplicates { $0?.identity == $1?.identity && $0?.knowsLength == $1?.knowsLength }
             .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
-            .sink { [weak self] info in
+            .sink { [weak self] song in self?.show(song) }
+            .store(in: &bag)
+        // Turning lyrics or English on or off applies to the song already playing.
+        settings.$lyricsInEnglish.combineLatest(settings.$showLyrics)
+            .dropFirst()
+            .removeDuplicates { $0 == $1 }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
                 guard let self else { return }
-                guard settings.showLyrics, let info else {
-                    self.lines = []
-                    self.plain = nil
-                    self.currentKey = nil
-                    return
-                }
-                self.load(key: info.0, title: info.1, artist: info.2, album: info.3, duration: info.4)
+                self.cache = [:]
+                self.currentKey = nil
+                self.show(self.song)
             }
             .store(in: &bag)
+    }
+
+    private func show(_ song: Song?) {
+        let changedSong = song?.identity != self.song?.identity
+        self.song = song
+        guard settings?.showLyrics ?? true, let song else {
+            lines = []
+            plain = nil
+            currentKey = nil
+            isLoading = false
+            return
+        }
+        load(song, keepShowing: !changedSong)
     }
 
     func showPreview(_ lines: [Line]) {
@@ -54,19 +90,31 @@ final class LyricsService: ObservableObject {
         return (lines[index].text, next)
     }
 
-    private func load(key: String, title: String, artist: String, album: String, duration: Double) {
+    private func load(_ song: Song, keepShowing: Bool) {
+        let key = song.key
         currentKey = key
         if let cached = cache[key] {
             lines = cached.0
             plain = cached.1
+            isLoading = false
             return
         }
-        lines = []
-        plain = nil
-        guard !title.isEmpty, !artist.isEmpty else { return }
+        // The same song, now with its length: keep what's on screen until the better answer lands.
+        if !keepShowing {
+            lines = []
+            plain = nil
+        }
+        guard !song.title.isEmpty, !song.artist.isEmpty else {
+            isLoading = false
+            return
+        }
         isLoading = true
+        let english = settings?.lyricsInEnglish ?? false
         Task { [weak self] in
-            let result = await Self.fetch(title: title, artist: artist, album: album, duration: duration)
+            let fetched = await Self.fetch(title: song.title, artist: song.artist, album: song.album, duration: song.duration)
+            var shown = fetched
+            if english, let found = fetched { shown = await Self.inEnglish(found) }
+            let result = shown
             await MainActor.run {
                 guard let self, self.currentKey == key else { return }
                 self.isLoading = false
@@ -78,6 +126,19 @@ final class LyricsService: ObservableObject {
                 self.plain = result.1
             }
         }
+    }
+
+    /// The same lines at the same times, in English.
+    private static func inEnglish(_ found: ([Line], String?)) async -> ([Line], String?) {
+        let (lines, plain) = found
+        let texts = await LyricsTranslator.english(lines.map(\.text))
+        let timed = zip(lines, texts).map { Line(time: $0.time, text: $1) }
+        var englishPlain = plain
+        if let plain {
+            let rows = plain.components(separatedBy: "\n")
+            englishPlain = await LyricsTranslator.english(rows).joined(separator: "\n")
+        }
+        return (timed, englishPlain)
     }
 
     private struct Record: Decodable {
@@ -129,16 +190,28 @@ final class LyricsService: ObservableObject {
             let (records, ok): ([Record]?, Bool) = await get(url.url!)
             reached = reached || ok
             guard let records, !records.isEmpty else { continue }
-            let timed = records.filter { !parse($0.syncedLyrics).isEmpty }
-            let close = timed.first { record in
-                guard duration > 0, let d = record.duration else { return false }
-                return abs(d - duration) <= 3
+            let timed = records.compactMap { record -> (Record, [Line])? in
+                let lines = parse(record.syncedLyrics)
+                return lines.isEmpty ? nil : (record, lines)
             }
-            if let best = close ?? timed.first { return (parse(best.syncedLyrics), best.plainLyrics) }
             plainFallback = plainFallback ?? records.first { $0.plainLyrics != nil }?.plainLyrics
+            guard duration > 0 else {
+                // Length unknown: the best guess for now. It is asked again once the length arrives.
+                if let first = timed.first { return (first.1, first.0.plainLyrics) }
+                continue
+            }
+            // The timed version closest in length, and only if it's the same cut: lyrics timed
+            // to a version 20 s longer drift further out of step with every verse.
+            let closest = timed
+                .compactMap { pair in pair.0.duration.map { (pair, abs($0 - duration)) } }
+                .min { $0.1 < $1.1 }
+            if let (pair, gap) = closest, gap <= Self.sameCut { return (pair.1, pair.0.plainLyrics) }
         }
         return reached ? ([], plainFallback) : nil
     }
+
+    /// How far a search result's length may be from the song's and still be the same recording.
+    static let sameCut: Double = 5
 
     /// "Song - Remastered 2011", "Song (feat. X)", "Song - Radio Edit" -> "Song".
     static func cleaned(_ title: String) -> String {
@@ -175,17 +248,48 @@ final class LyricsService: ObservableObject {
         return (nil, false)
     }
 
-    /// Parses LRC: `[mm:ss.xx] words`.
+    /// Parses LRC: `[mm:ss.xx] words`. A repeated line may carry several stamps
+    /// (`[00:12.00][01:40.50] chorus`); `[offset:+250]` shifts every line (positive is earlier,
+    /// in milliseconds); word stamps (`<00:12.40>`) are dropped; `[mm:ss:xx]` is read too.
     static func parse(_ lrc: String?) -> [Line] {
         guard let lrc else { return [] }
         var lines: [Line] = []
-        for raw in lrc.split(separator: "\n") {
-            guard raw.hasPrefix("["), let close = raw.firstIndex(of: "]") else { continue }
-            let stamp = raw[raw.index(after: raw.startIndex)..<close].split(separator: ":")
-            guard stamp.count == 2, let minutes = Double(stamp[0]), let seconds = Double(stamp[1]) else { continue }
-            let text = raw[raw.index(after: close)...].trimmingCharacters(in: .whitespaces)
-            lines.append(Line(time: minutes * 60 + seconds, text: text.isEmpty ? "♪" : text))
+        var offset = 0.0
+        for row in lrc.split(whereSeparator: \.isNewline) {
+            var rest = Substring(row.trimmingCharacters(in: .whitespaces))
+            var stamps: [Double] = []
+            while rest.hasPrefix("["), let close = rest.firstIndex(of: "]") {
+                let tag = rest[rest.index(after: rest.startIndex)..<close]
+                if let time = stamp(tag) {
+                    stamps.append(time)
+                } else if tag.lowercased().hasPrefix("offset:"),
+                          let ms = Double(tag.dropFirst("offset:".count).trimmingCharacters(in: .whitespaces)) {
+                    offset = ms / 1000
+                }
+                rest = rest[rest.index(after: close)...]
+            }
+            guard !stamps.isEmpty else { continue }
+            let text = rest
+                .replacingOccurrences(of: #"<\d+:\d+(?:[.:]\d+)?>"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            for time in stamps {
+                lines.append(Line(time: time, text: text.isEmpty ? "♪" : text))
+            }
         }
-        return lines.sorted { $0.time < $1.time }
+        return lines
+            .map { Line(time: max(0, $0.time - offset), text: $0.text) }
+            .sorted { $0.time < $1.time }
+    }
+
+    /// "01:02.50" or "01:02:50" -> 62.5 seconds; nil for a tag like "ar:Artist".
+    private static func stamp(_ tag: Substring) -> Double? {
+        let parts = tag.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2 || parts.count == 3, let minutes = Double(parts[0]) else { return nil }
+        if parts.count == 2 {
+            guard let seconds = Double(parts[1]) else { return nil }
+            return minutes * 60 + seconds
+        }
+        guard let seconds = Double(parts[1]), let hundredths = Double(parts[2]) else { return nil }
+        return minutes * 60 + seconds + hundredths / pow(10, Double(parts[2].count))
     }
 }

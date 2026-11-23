@@ -249,7 +249,11 @@ final class NowPlaying: ObservableObject {
             end timeout
             """
         }
+        let asked = Date()
         guard let result = AppleScript.run(source), result.numberOfItems >= 6 else { return nil }
+        // The player read its position partway through the round trip, not when the answer
+        // arrived: date it from the middle, or the lyrics run a little behind the song.
+        let readAt = asked.addingTimeInterval(Date().timeIntervalSince(asked) / 2)
         func text(_ i: Int) -> String { result.atIndex(i)?.stringValue ?? "" }
         func number(_ i: Int) -> Double { result.atIndex(i)?.doubleValue ?? 0 }
         let title = text(2)
@@ -259,7 +263,7 @@ final class NowPlaying: ObservableObject {
                      isPlaying: text(1) == "playing", player: player, bundleID: player.bundleID,
                      appName: player.rawValue,
                      artworkURL: result.numberOfItems >= 7 ? text(7) : nil,
-                     fetchedAt: Date())
+                     fetchedAt: readAt)
     }
 
     private func loadScriptedArtwork(for track: Track) {

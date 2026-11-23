@@ -950,6 +950,12 @@ private struct MediaPane: View {
             Divider()
             ToggleRow(title: "Synced lyrics", detail: "The current line under the song, from LRCLIB. The song title and artist are sent to lrclib.net.",
                       isOn: $settings.showLyrics)
+            if settings.showLyrics {
+                Divider()
+                ToggleRow(title: "Lyrics in English",
+                          detail: "A song in another language shows its lyrics in English, still in time with the song. Translated on this Mac; a language macOS can't translate is shown in English letters.",
+                          isOn: $settings.lyricsInEnglish)
+            }
         }
         Card(title: "Volume and brightness") {
             ToggleRow(title: "Replace the macOS HUD",
